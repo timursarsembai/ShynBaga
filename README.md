@@ -1,4 +1,4 @@
-# ShinBaga
+# ShynBaga
 
 Независимый бесплатный монитор истории цен на маркетплейсах. Название значит «честная цена». Проект не связан с Kaspi.kz и другими площадками.
 
@@ -7,7 +7,7 @@
 ## Запуск
 
 ```bash
-cp .env.example .env        # задать пароль и SHINBAGA_PROXY_URL
+cp .env.example .env        # задать пароль и SHYNBAGA_PROXY_URL
 docker compose up -d --build   # база и сборщик: обход сразу, затем раз в сутки
 docker compose logs -f collector
 ```
@@ -15,19 +15,19 @@ docker compose logs -f collector
 Проверить доступ двумя запросами, не трогая базу:
 
 ```bash
-docker run --rm --network host --env-file .env shinbaga check
+docker run --rm --network host --env-file .env shynbaga check
 ```
 
-Тесты (нужна пустая база `shinbaga_test`, они её стирают):
+Тесты (нужна пустая база `shynbaga_test`, они её стирают):
 
 ```bash
-docker build -t shinbaga . && docker run --rm --network host --env-file .env --entrypoint python shinbaga -m pytest -q
+docker build -t shynbaga . && docker run --rm --network host --env-file .env --entrypoint python shynbaga -m pytest -q
 ```
 
 История товара по ссылке с маркетплейса. Если товара ещё нет в базе, он добавится и останется на отслеживании:
 
 ```bash
-docker run --rm --network host --env-file .env shinbaga lookup 'https://kaspi.kz/shop/p/...'
+docker run --rm --network host --env-file .env shynbaga lookup 'https://kaspi.kz/shop/p/...'
 ```
 
 ## Устройство
@@ -43,6 +43,6 @@ docker run --rm --network host --env-file .env shinbaga lookup 'https://kaspi.kz
 
 ## Уведомления
 
-О блокировке, падении или неполном обходе сборщик пишет в Telegram (`SHINBAGA_TELEGRAM_BOT_TOKEN`, `SHINBAGA_TELEGRAM_CHAT_ID`). Проверка: `docker run --rm --network host --env-file .env shinbaga test-alert`.
+О блокировке, падении или неполном обходе сборщик пишет в Telegram (`SHYNBAGA_TELEGRAM_BOT_TOKEN`, `SHYNBAGA_TELEGRAM_CHAT_ID`). Проверка: `docker run --rm --network host --env-file .env shynbaga test-alert`.
 
 Описание API Каспи взято из [market-sources](https://github.com/octrow/market-sources) (MIT).

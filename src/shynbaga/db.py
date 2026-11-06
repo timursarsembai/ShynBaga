@@ -5,7 +5,7 @@ from typing import NamedTuple
 
 import psycopg
 
-from shinbaga.marketplaces import Offer, OfferList, Product
+from shynbaga.marketplaces import Offer, OfferList, Product
 
 # Past this without an observation, we no longer know the price held in between.
 MAX_OBSERVATION_GAP = timedelta(hours=48)
@@ -38,7 +38,7 @@ def connect(url: str) -> psycopg.Connection:
 
 
 def migrate(conn: psycopg.Connection) -> None:
-    conn.execute(files("shinbaga").joinpath("schema.sql").read_text(encoding="utf-8"))
+    conn.execute(files("shynbaga").joinpath("schema.sql").read_text(encoding="utf-8"))
     conn.commit()
 
 

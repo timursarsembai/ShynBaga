@@ -54,7 +54,7 @@ class Marketplace(Protocol):
 
 def identify(url: str) -> tuple[str, str] | None:
     """(marketplace key, product id) for a product link, None if we do not recognize it."""
-    from shinbaga.marketplaces.kaspi import parse_product_url
+    from shynbaga.marketplaces.kaspi import parse_product_url
 
     external_id = parse_product_url(url)
     return ("kaspi", external_id) if external_id else None
@@ -62,7 +62,7 @@ def identify(url: str) -> tuple[str, str] | None:
 
 def create(key: str, *, proxy: str | None, delay: float) -> Marketplace:
     if key == "kaspi":
-        from shinbaga.marketplaces.kaspi import Kaspi
+        from shynbaga.marketplaces.kaspi import Kaspi
 
         return Kaspi(proxy=proxy, delay=delay)
     raise ValueError(f"unknown marketplace: {key}")

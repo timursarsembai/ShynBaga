@@ -3,9 +3,9 @@ from decimal import Decimal
 
 import pytest
 
-from shinbaga import collector, db
-from shinbaga.marketplaces import Offer, OfferList, identify
-from shinbaga.marketplaces.kaspi import parse_offers, parse_product, product_url, seller_url
+from shynbaga import collector, db
+from shynbaga.marketplaces import Offer, OfferList, identify
+from shynbaga.marketplaces.kaspi import parse_offers, parse_product, product_url, seller_url
 from tests.test_collector import REGION, T0, FakeMarket, offer, product, run
 
 

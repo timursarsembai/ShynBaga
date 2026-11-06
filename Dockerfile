@@ -5,4 +5,4 @@ COPY src ./src
 COPY tests ./tests
 RUN pip install --no-cache-dir -e '.[dev]'
 USER nobody
-ENTRYPOINT ["shinbaga"]
+ENTRYPOINT ["shynbaga"]

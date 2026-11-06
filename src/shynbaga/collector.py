@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 
 import psycopg
 
-from shinbaga import db
-from shinbaga.marketplaces import Blocked, Marketplace, MarketplaceError, Product
+from shynbaga import db
+from shynbaga.marketplaces import Blocked, Marketplace, MarketplaceError, Product
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +29,13 @@ def alert_text(marketplace: str, category: str, result: RunResult) -> str | None
     where = f"{marketplace}, {category}"
     saved = f"Успели сохранить: {result.products_ok}."
     if result.status == "blocked":
-        return f"ShinBaga: сбор заблокирован ({where}). {result.error}. {saved}"
+        return f"ShynBaga: сбор заблокирован ({where}). {result.error}. {saved}"
     if result.status == "failed":
-        return f"ShinBaga: сбор упал ({where}). {result.error}. {saved}"
+        return f"ShynBaga: сбор упал ({where}). {result.error}. {saved}"
     attempted = result.products_ok + result.products_failed
     if result.error or result.products_failed > attempted * ALERT_FAILED_SHARE:
         return (
-            f"ShinBaga: обход прошёл не полностью ({where}). "
+            f"ShynBaga: обход прошёл не полностью ({where}). "
             f"Ошибок: {result.products_failed} из {attempted}. {result.error or ''}".rstrip()
         )
     return None

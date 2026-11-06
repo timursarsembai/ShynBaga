@@ -4,15 +4,15 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta
 
-from shinbaga import collector, db, notify
-from shinbaga.marketplaces import MarketplaceError, create, identify
+from shynbaga import collector, db, notify
+from shynbaga.marketplaces import MarketplaceError, create, identify
 
 DEFAULT_REGION = "750000000"  # Almaty
 DEFAULT_CATEGORY = "Smartphones"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="shinbaga")
+    parser = argparse.ArgumentParser(prog="shynbaga")
     parser.add_argument("command", choices=["check", "migrate", "collect", "lookup", "test-alert"])
     parser.add_argument("url", nargs="?", help="product link, for lookup")
     parser.add_argument("--marketplace", default="kaspi")
@@ -34,7 +34,7 @@ def main() -> int:
         return 0
 
     if args.command == "test-alert":
-        return 0 if notify.send("ShinBaga: проверка уведомлений о сборе.") else 1
+        return 0 if notify.send("ShynBaga: проверка уведомлений о сборе.") else 1
 
     if args.command == "lookup":
         found = identify(args.url or "")
@@ -45,8 +45,8 @@ def main() -> int:
 
     market = create(
         args.marketplace,
-        proxy=os.environ.get("SHINBAGA_PROXY_URL") or None,
-        delay=float(os.environ.get("SHINBAGA_REQUEST_DELAY") or 10),
+        proxy=os.environ.get("SHYNBAGA_PROXY_URL") or None,
+        delay=float(os.environ.get("SHYNBAGA_REQUEST_DELAY") or 10),
     )
     try:
         if args.command == "check":
@@ -71,7 +71,7 @@ def _collect(market, args: argparse.Namespace) -> int:
             )
     except Exception as error:
         # Only the type: database errors can quote the connection string.
-        notify.send(f"ShinBaga: сборщик упал с ошибкой {type(error).__name__}.")
+        notify.send(f"ShynBaga: сборщик упал с ошибкой {type(error).__name__}.")
         raise
     print(result)
     if text := collector.alert_text(market.key, args.category, result):

@@ -4,8 +4,8 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from shinbaga.marketplaces import Blocked, MarketplaceError, Product
-from shinbaga.marketplaces.kaspi import (
+from shynbaga.marketplaces import Blocked, MarketplaceError, Product
+from shynbaga.marketplaces.kaspi import (
     ALMATY,
     BASE_URL,
     OFFERS_PAGE_SIZE,

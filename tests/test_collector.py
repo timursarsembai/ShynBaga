@@ -3,8 +3,8 @@ from decimal import Decimal
 
 import pytest
 
-from shinbaga import collector
-from shinbaga.marketplaces import Blocked, MarketplaceError, Offer, OfferList, Product
+from shynbaga import collector
+from shynbaga.marketplaces import Blocked, MarketplaceError, Offer, OfferList, Product
 
 T0 = datetime(2026, 11, 1, tzinfo=UTC)
 REGION = "750000000"

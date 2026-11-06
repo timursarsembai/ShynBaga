@@ -7,8 +7,8 @@ logger = logging.getLogger(__name__)
 
 
 def send(text: str) -> bool:
-    token = os.environ.get("SHINBAGA_TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("SHINBAGA_TELEGRAM_CHAT_ID")
+    token = os.environ.get("SHYNBAGA_TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("SHYNBAGA_TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         logger.warning("alert not sent, Telegram is not configured: %s", text)
         return False

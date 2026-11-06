@@ -11,7 +11,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from shinbaga.marketplaces import Blocked, MarketplaceError, Offer, OfferList, Product
+from shynbaga.marketplaces import Blocked, MarketplaceError, Offer, OfferList, Product
 
 BASE_URL = "https://kaspi.kz"
 ALMATY = "750000000"

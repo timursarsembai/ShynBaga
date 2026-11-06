@@ -3,7 +3,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from shinbaga import db
+from shynbaga import db
 
 
 @pytest.fixture

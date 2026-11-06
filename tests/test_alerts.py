@@ -5,9 +5,9 @@ from datetime import timedelta
 
 import pytest
 
-from shinbaga import db, notify
-from shinbaga.collector import RunResult, alert_text
-from shinbaga.marketplaces import Blocked, OfferList
+from shynbaga import db, notify
+from shynbaga.collector import RunResult, alert_text
+from shynbaga.marketplaces import Blocked, OfferList
 from tests.test_collector import REGION, T0, FakeMarket, offer, run
 
 
@@ -53,8 +53,8 @@ class FakeResponse:
 
 
 def configure(monkeypatch):
-    monkeypatch.setenv("SHINBAGA_TELEGRAM_BOT_TOKEN", "123:secret")
-    monkeypatch.setenv("SHINBAGA_TELEGRAM_CHAT_ID", "42")
+    monkeypatch.setenv("SHYNBAGA_TELEGRAM_BOT_TOKEN", "123:secret")
+    monkeypatch.setenv("SHYNBAGA_TELEGRAM_CHAT_ID", "42")
 
 
 def test_send_posts_to_the_chat(monkeypatch):
@@ -72,8 +72,8 @@ def test_send_posts_to_the_chat(monkeypatch):
 
 
 def test_send_without_configuration_does_not_call_out(monkeypatch):
-    monkeypatch.delenv("SHINBAGA_TELEGRAM_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("SHINBAGA_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("SHYNBAGA_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("SHYNBAGA_TELEGRAM_CHAT_ID", raising=False)
 
     def urlopen(request, timeout):
         pytest.fail("must not send")

@@ -24,6 +24,12 @@ docker run --rm --network host --env-file .env shinbaga check
 docker build -t shinbaga . && docker run --rm --network host --env-file .env --entrypoint python shinbaga -m pytest -q
 ```
 
+История товара по ссылке с маркетплейса. Если товара ещё нет в базе, он добавится и останется на отслеживании:
+
+```bash
+docker run --rm --network host --env-file .env shinbaga lookup 'https://kaspi.kz/shop/p/...'
+```
+
 ## Устройство
 
 - `marketplaces/` — по одному адаптеру на площадку за протоколом `Marketplace`. Новая площадка не требует менять схему.

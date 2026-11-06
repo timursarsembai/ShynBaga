@@ -18,6 +18,21 @@ class CurrentPrice(NamedTuple):
     last_seen_at: datetime
 
 
+class ProductInfo(NamedTuple):
+    title: str
+    url: str | None
+
+
+class PricePeriod(NamedTuple):
+    seller: str
+    seller_url: str | None
+    price: Decimal
+    currency: str
+    first_seen_at: datetime
+    last_seen_at: datetime
+    is_current: bool
+
+
 def connect(url: str) -> psycopg.Connection:
     return psycopg.connect(url)
 
@@ -65,14 +80,15 @@ def upsert_product(
 ) -> int:
     row = conn.execute(
         """INSERT INTO products (marketplace, external_id, title, brand, category_path,
-                                 url, image_url, first_seen_at, last_seen_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                 url, image_url, offers_ref, first_seen_at, last_seen_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (marketplace, external_id) DO UPDATE SET
                title = EXCLUDED.title,
                brand = EXCLUDED.brand,
                category_path = EXCLUDED.category_path,
                url = EXCLUDED.url,
                image_url = EXCLUDED.image_url,
+               offers_ref = EXCLUDED.offers_ref,
                last_seen_at = EXCLUDED.last_seen_at
            RETURNING id""",
         (
@@ -83,6 +99,7 @@ def upsert_product(
             list(product.category_path),
             product.url,
             product.image_url,
+            product.offers_ref,
             now,
             now,
         ),
@@ -94,12 +111,13 @@ def _upsert_seller(
     conn: psycopg.Connection, marketplace: str, offer: Offer, now: datetime
 ) -> int:
     row = conn.execute(
-        """INSERT INTO sellers (marketplace, external_id, name, first_seen_at, last_seen_at)
-           VALUES (%s, %s, %s, %s, %s)
+        """INSERT INTO sellers (marketplace, external_id, name, url,
+                                first_seen_at, last_seen_at)
+           VALUES (%s, %s, %s, %s, %s, %s)
            ON CONFLICT (marketplace, external_id) DO UPDATE SET
-               name = EXCLUDED.name, last_seen_at = EXCLUDED.last_seen_at
+               name = EXCLUDED.name, url = EXCLUDED.url, last_seen_at = EXCLUDED.last_seen_at
            RETURNING id""",
-        (marketplace, offer.seller_id, offer.seller_name, now, now),
+        (marketplace, offer.seller_id, offer.seller_name, offer.seller_url, now, now),
     ).fetchone()
     return row[0]
 
@@ -141,6 +159,67 @@ def record_offers(
     if offers.complete:
         for interval in current.values():
             _close(conn, interval.id)
+
+
+def is_known_product(conn: psycopg.Connection, marketplace: str, external_id: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM products WHERE marketplace = %s AND external_id = %s",
+        (marketplace, external_id),
+    ).fetchone()
+    return row is not None
+
+
+def mark_requested(
+    conn: psycopg.Connection, marketplace: str, external_id: str, now: datetime
+) -> None:
+    conn.execute(
+        """UPDATE products SET requested_at = COALESCE(requested_at, %s)
+           WHERE marketplace = %s AND external_id = %s""",
+        (now, marketplace, external_id),
+    )
+
+
+def requested_products(conn: psycopg.Connection, marketplace: str) -> list[Product]:
+    rows = conn.execute(
+        """SELECT external_id, title, COALESCE(offers_ref, external_id), url, image_url,
+                  brand, category_path
+           FROM products WHERE marketplace = %s AND requested_at IS NOT NULL""",
+        (marketplace,),
+    ).fetchall()
+    return [Product(*row[:6], category_path=tuple(row[6])) for row in rows]
+
+
+def product_history(
+    conn: psycopg.Connection, marketplace: str, external_id: str, region: str
+) -> tuple[ProductInfo, list[PricePeriod]] | None:
+    row = conn.execute(
+        "SELECT id, title, url FROM products WHERE marketplace = %s AND external_id = %s",
+        (marketplace, external_id),
+    ).fetchone()
+    if row is None:
+        return None
+    rows = conn.execute(
+        """SELECT s.name, s.url, i.price, i.currency, i.first_seen_at, i.last_seen_at,
+                  i.is_current
+           FROM price_intervals i JOIN sellers s ON s.id = i.seller_id
+           WHERE i.product_id = %s AND i.region = %s
+           ORDER BY i.first_seen_at, i.price""",
+        (row[0], region),
+    ).fetchall()
+    return ProductInfo(row[1], row[2]), [PricePeriod(*r) for r in rows]
+
+
+def lowest_prices(history: list[PricePeriod]) -> list[tuple[datetime, Decimal]]:
+    """The lowest price among sellers at each moment we looked, dropping repeats."""
+    moments = sorted({p.first_seen_at for p in history} | {p.last_seen_at for p in history})
+    series: list[tuple[datetime, Decimal]] = []
+    for moment in moments:
+        lowest = min(
+            p.price for p in history if p.first_seen_at <= moment <= p.last_seen_at
+        )
+        if not series or series[-1][1] != lowest:
+            series.append((moment, lowest))
+    return series
 
 
 def _close(conn: psycopg.Connection, interval_id: int) -> None:

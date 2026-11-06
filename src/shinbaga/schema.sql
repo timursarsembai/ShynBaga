@@ -54,3 +54,8 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
     bytes_received  bigint NOT NULL DEFAULT 0,
     error           text
 );
+
+ALTER TABLE sellers ADD COLUMN IF NOT EXISTS url text;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS offers_ref text;
+-- Set when someone looked the product up: it stays tracked outside the crawled top.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS requested_at timestamptz;

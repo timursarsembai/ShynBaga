@@ -7,6 +7,7 @@ import re
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -23,6 +24,33 @@ MAX_OFFER_PAGES = 5
 CURRENCY = "KZT"
 
 _LEADING_DIGITS = re.compile(r"^\d+")
+_PRODUCT_PATH = re.compile(r"^/shop/(?:[^/]+/)?p/(?:[^/]*-)?(\d+)[a-z]*/?$", re.IGNORECASE)
+
+
+def parse_product_url(url: str) -> str | None:
+    url = url.strip()
+    try:
+        parts = urlsplit(url if "://" in url else f"https://{url}")
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return None
+    if host != "kaspi.kz" and not host.endswith(".kaspi.kz"):
+        return None
+    match = _PRODUCT_PATH.match(parts.path)
+    return match.group(1) if match else None
+
+
+def product_url(link: str) -> str:
+    """The public address without the city query, so one product has one URL."""
+    path = link.split("?")[0]
+    if path.startswith("http"):
+        return path
+    return f"{BASE_URL}/shop{path}" if path.startswith("/p/") else BASE_URL + path
+
+
+def seller_url(seller_id: str) -> str:
+    # Kaspi redirects mixed-case ids such as "Sulpak" to the lowercase address.
+    return f"{BASE_URL}/shop/info/merchant/{quote(seller_id.lower(), safe='')}/"
 
 
 def parse_products(payload: Any) -> list[Product]:
@@ -47,7 +75,7 @@ def _parse_card(card: dict) -> Product | None:
         external_id=match.group(),
         title=title,
         offers_ref=str(card.get("configSku") or match.group()),
-        url=f"{BASE_URL}/shop{link}" if link and link.startswith("/p/") else link,
+        url=product_url(link) if link else None,
         image_url=_text(image.get("medium")) or _text(image.get("large")),
         brand=brand,
         category_path=tuple(c for c in category if isinstance(c, str))
@@ -58,6 +86,27 @@ def _parse_card(card: dict) -> Product | None:
 
 def _text(raw: object) -> str | None:
     return raw if isinstance(raw, str) and raw else None
+
+
+def parse_product(payload: Any, external_id: str) -> Product:
+    card = payload.get("card") if isinstance(payload, dict) else None
+    title = _text(card.get("name")) if isinstance(card, dict) else None
+    if not title:
+        raise MarketplaceError(f"product {external_id} has no card")
+    gallery = payload.get("galleryImages")
+    image = gallery[0] if isinstance(gallery, list) and gallery else {}
+    category = _text(payload.get("masterCategoryName"))
+    return Product(
+        external_id=external_id,
+        title=title,
+        offers_ref=external_id,
+        url=product_url(f"/p/-{external_id}/"),
+        image_url=(_text(image.get("medium")) or _text(image.get("large")))
+        if isinstance(image, dict)
+        else None,
+        brand=_text(card.get("brand")),
+        category_path=(category,) if category else (),
+    )
 
 
 def parse_offers(payload: Any) -> list[Offer]:
@@ -80,6 +129,7 @@ def parse_offers(payload: Any) -> list[Offer]:
                 seller_name=_text(raw.get("merchantName")) or str(seller_id),
                 price=price,
                 currency=CURRENCY,
+                seller_url=seller_url(str(seller_id)),
             )
         )
     return offers
@@ -137,6 +187,16 @@ class Kaspi:
             },
         )
         return parse_products(payload)
+
+    def fetch_product(self, external_id: str, region: str) -> Product:
+        payload = self._request(
+            "GET",
+            f"/yml/content/item/product/{external_id}",
+            region,
+            referer=f"{BASE_URL}/shop/p/-{external_id}/?c={region}",
+            params={"c": region},
+        )
+        return parse_product(payload, external_id)
 
     def fetch_offers(self, product: Product, region: str) -> OfferList:
         offers: dict[str, Offer] = {}

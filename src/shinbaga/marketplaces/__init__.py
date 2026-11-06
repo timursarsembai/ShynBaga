@@ -29,6 +29,7 @@ class Offer:
     seller_name: str
     price: Decimal
     currency: str
+    seller_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -44,9 +45,19 @@ class Marketplace(Protocol):
 
     def list_products(self, category: str, region: str, page: int) -> list[Product]: ...
 
+    def fetch_product(self, external_id: str, region: str) -> Product: ...
+
     def fetch_offers(self, product: Product, region: str) -> OfferList: ...
 
     def close(self) -> None: ...
+
+
+def identify(url: str) -> tuple[str, str] | None:
+    """(marketplace key, product id) for a product link, None if we do not recognize it."""
+    from shinbaga.marketplaces.kaspi import parse_product_url
+
+    external_id = parse_product_url(url)
+    return ("kaspi", external_id) if external_id else None
 
 
 def create(key: str, *, proxy: str | None, delay: float) -> Marketplace:

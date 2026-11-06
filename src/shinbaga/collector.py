@@ -93,6 +93,25 @@ def collect(
     return result
 
 
+def track(
+    conn: psycopg.Connection,
+    market: Marketplace,
+    external_id: str,
+    region: str,
+    *,
+    clock: Callable[[], datetime] = _utcnow,
+) -> None:
+    """Make sure a product someone asked about is tracked, fetching it if it is new."""
+    if not db.is_known_product(conn, market.key, external_id):
+        product = market.fetch_product(external_id, region)
+        offers = market.fetch_offers(product, region)
+        now = clock()
+        product_id = db.upsert_product(conn, market.key, product, now)
+        db.record_offers(conn, market.key, product_id, region, offers, now)
+    db.mark_requested(conn, market.key, external_id, clock())
+    conn.commit()
+
+
 def _collect_products(
     conn: psycopg.Connection,
     market: Marketplace,
@@ -105,6 +124,9 @@ def _collect_products(
     products, result.error = discover(market, category, region, max_products)
     if not products:
         raise MarketplaceError(f"category {category} returned no products")
+    found = {p.external_id: p for p in db.requested_products(conn, market.key)}
+    found.update({p.external_id: p for p in products})
+    products = list(found.values())
 
     consecutive_blocks = 0
     for product in products:

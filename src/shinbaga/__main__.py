@@ -4,7 +4,7 @@ import os
 import sys
 
 from shinbaga import collector, db
-from shinbaga.marketplaces import MarketplaceError, create
+from shinbaga.marketplaces import MarketplaceError, create, identify
 
 DEFAULT_REGION = "750000000"  # Almaty
 DEFAULT_CATEGORY = "Smartphones"
@@ -12,7 +12,8 @@ DEFAULT_CATEGORY = "Smartphones"
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="shinbaga")
-    parser.add_argument("command", choices=["check", "migrate", "collect"])
+    parser.add_argument("command", choices=["check", "migrate", "collect", "lookup"])
+    parser.add_argument("url", nargs="?", help="product link, for lookup")
     parser.add_argument("--marketplace", default="kaspi")
     parser.add_argument("--category", default=DEFAULT_CATEGORY)
     parser.add_argument("--region", default=DEFAULT_REGION)
@@ -25,6 +26,13 @@ def main() -> int:
             db.migrate(conn)
         return 0
 
+    if args.command == "lookup":
+        found = identify(args.url or "")
+        if found is None:
+            print("Это не похоже на ссылку на товар.", file=sys.stderr)
+            return 1
+        args.marketplace, external_id = found
+
     market = create(
         args.marketplace,
         proxy=os.environ.get("SHINBAGA_PROXY_URL") or None,
@@ -33,6 +41,9 @@ def main() -> int:
     try:
         if args.command == "check":
             return _check(market, args.category, args.region)
+        if args.command == "lookup":
+            with db.connect(os.environ["DATABASE_URL"]) as conn:
+                return _lookup(conn, market, external_id, args.region)
         with db.connect(os.environ["DATABASE_URL"]) as conn:
             result = collector.collect(
                 conn, market, args.category, args.region, args.max_products
@@ -41,6 +52,25 @@ def main() -> int:
         return 0 if result.status in ("completed", "partial") else 1
     finally:
         market.close()
+
+
+def _lookup(conn, market, external_id: str, region: str) -> int:
+    try:
+        collector.track(conn, market, external_id, region)
+    except MarketplaceError as error:
+        print(f"Товар не удалось получить: {error}", file=sys.stderr)
+        return 1
+    info, history = db.product_history(conn, market.key, external_id, region)
+    print(info.title)
+    print(info.url)
+    print("\nТекущие цены:")
+    current = sorted((p for p in history if p.is_current), key=lambda p: p.price)
+    for period in current:
+        print(f"  {period.price:>12} {period.currency}  {period.seller}  {period.seller_url}")
+    print("\nМинимальная цена по времени:")
+    for moment, price in db.lowest_prices(history):
+        print(f"  {moment:%Y-%m-%d %H:%M} UTC  {price}")
+    return 0
 
 
 def _check(market, category: str, region: str) -> int:

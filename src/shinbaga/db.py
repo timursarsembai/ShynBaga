@@ -54,6 +54,19 @@ def start_run(
     return row[0]
 
 
+def last_run_finished_at(
+    conn: psycopg.Connection, marketplace: str, category: str, region: str
+) -> datetime | None:
+    # An interrupted run says nothing about the marketplace, so it does not count.
+    row = conn.execute(
+        """SELECT max(finished_at) FROM crawl_runs
+           WHERE marketplace = %s AND category = %s AND region = %s
+             AND status <> 'interrupted'""",
+        (marketplace, category, region),
+    ).fetchone()
+    return row[0]
+
+
 def finish_run(
     conn: psycopg.Connection,
     run_id: int,

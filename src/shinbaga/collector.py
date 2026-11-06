@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 # One refusal can be a hiccup; several in a row mean the IP is blocked.
 MAX_CONSECUTIVE_BLOCKS = 3
+# Single failed products are normal; a larger share means something is wrong.
+ALERT_FAILED_SHARE = 0.1
 
 
 @dataclass
@@ -20,6 +22,23 @@ class RunResult:
     products_ok: int = 0
     products_failed: int = 0
     error: str | None = None
+
+
+def alert_text(marketplace: str, category: str, result: RunResult) -> str | None:
+    """What to tell the owner about a finished run; None when it went fine."""
+    where = f"{marketplace}, {category}"
+    saved = f"Успели сохранить: {result.products_ok}."
+    if result.status == "blocked":
+        return f"ShinBaga: сбор заблокирован ({where}). {result.error}. {saved}"
+    if result.status == "failed":
+        return f"ShinBaga: сбор упал ({where}). {result.error}. {saved}"
+    attempted = result.products_ok + result.products_failed
+    if result.error or result.products_failed > attempted * ALERT_FAILED_SHARE:
+        return (
+            f"ShinBaga: обход прошёл не полностью ({where}). "
+            f"Ошибок: {result.products_failed} из {attempted}. {result.error or ''}".rstrip()
+        )
+    return None
 
 
 def _utcnow() -> datetime:

@@ -2,8 +2,9 @@ import argparse
 import logging
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 
-from shinbaga import collector, db
+from shinbaga import collector, db, notify
 from shinbaga.marketplaces import MarketplaceError, create, identify
 
 DEFAULT_REGION = "750000000"  # Almaty
@@ -12,12 +13,18 @@ DEFAULT_CATEGORY = "Smartphones"
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="shinbaga")
-    parser.add_argument("command", choices=["check", "migrate", "collect", "lookup"])
+    parser.add_argument("command", choices=["check", "migrate", "collect", "lookup", "test-alert"])
     parser.add_argument("url", nargs="?", help="product link, for lookup")
     parser.add_argument("--marketplace", default="kaspi")
     parser.add_argument("--category", default=DEFAULT_CATEGORY)
     parser.add_argument("--region", default=DEFAULT_REGION)
     parser.add_argument("--max-products", type=int, default=1000)
+    parser.add_argument(
+        "--min-interval-hours",
+        type=float,
+        default=0,
+        help="skip collect when a run finished this recently, so restarts do not re-crawl",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -25,6 +32,9 @@ def main() -> int:
         with db.connect(os.environ["DATABASE_URL"]) as conn:
             db.migrate(conn)
         return 0
+
+    if args.command == "test-alert":
+        return 0 if notify.send("ShinBaga: проверка уведомлений о сборе.") else 1
 
     if args.command == "lookup":
         found = identify(args.url or "")
@@ -44,14 +54,29 @@ def main() -> int:
         if args.command == "lookup":
             with db.connect(os.environ["DATABASE_URL"]) as conn:
                 return _lookup(conn, market, external_id, args.region)
+        return _collect(market, args)
+    finally:
+        market.close()
+
+
+def _collect(market, args: argparse.Namespace) -> int:
+    try:
         with db.connect(os.environ["DATABASE_URL"]) as conn:
+            finished = db.last_run_finished_at(conn, market.key, args.category, args.region)
+            age = datetime.now(UTC) - finished if finished else None
+            if age is not None and age < timedelta(hours=args.min_interval_hours):
+                return 0
             result = collector.collect(
                 conn, market, args.category, args.region, args.max_products
             )
-        print(result)
-        return 0 if result.status in ("completed", "partial") else 1
-    finally:
-        market.close()
+    except Exception as error:
+        # Only the type: database errors can quote the connection string.
+        notify.send(f"ShinBaga: сборщик упал с ошибкой {type(error).__name__}.")
+        raise
+    print(result)
+    if text := collector.alert_text(market.key, args.category, result):
+        notify.send(text)
+    return 0 if result.status in ("completed", "partial") else 1
 
 
 def _lookup(conn, market, external_id: str, region: str) -> int:

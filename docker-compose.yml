@@ -29,11 +29,13 @@ services:
     entrypoint:
       - sh
       - -c
-      - shinbaga migrate; while true; do shinbaga collect --max-products 1000; sleep 86400; done
+      - shinbaga migrate; while true; do shinbaga collect --max-products 1000 --min-interval-hours 23; sleep 3600; done
     environment:
       DATABASE_URL: postgresql://shinbaga:${POSTGRES_PASSWORD}@postgres:5432/shinbaga
       SHINBAGA_PROXY_URL: ${SHINBAGA_PROXY_URL:-}
       SHINBAGA_REQUEST_DELAY: ${SHINBAGA_REQUEST_DELAY:-10}
+      SHINBAGA_TELEGRAM_BOT_TOKEN: ${SHINBAGA_TELEGRAM_BOT_TOKEN:-}
+      SHINBAGA_TELEGRAM_CHAT_ID: ${SHINBAGA_TELEGRAM_CHAT_ID:-}
     mem_limit: 256m
     logging:
       driver: json-file

@@ -41,4 +41,8 @@ docker run --rm --network host --env-file .env shinbaga lookup 'https://kaspi.kz
 - Один запрос раз в 10 секунд, остановка после трёх отказов подряд.
 - Только публичные данные. Без аккаунтов и обхода капчи.
 
+## Уведомления
+
+О блокировке, падении или неполном обходе сборщик пишет в Telegram (`SHINBAGA_TELEGRAM_BOT_TOKEN`, `SHINBAGA_TELEGRAM_CHAT_ID`). Проверка: `docker run --rm --network host --env-file .env shinbaga test-alert`.
+
 Описание API Каспи взято из [market-sources](https://github.com/octrow/market-sources) (MIT).

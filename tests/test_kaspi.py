@@ -31,18 +31,16 @@ def raw_offers(start: int, count: int) -> list[dict]:
 def test_parse_products_maps_a_card():
     [product] = parse_products(
         {
-            "data": {
-                "cards": [
-                    {
-                        "id": "123",
-                        "title": "iPhone",
-                        "shopLink": "/p/iphone-123/",
-                        "previewImages": [{"medium": "https://img.test/m.jpg"}],
-                        "brand": "Apple",
-                        "categoryRu": ["Телефоны", "Смартфоны"],
-                    }
-                ]
-            }
+            "data": [
+                {
+                    "id": "123",
+                    "title": "iPhone",
+                    "shopLink": "/p/iphone-123/",
+                    "previewImages": [{"medium": "https://img.test/m.jpg"}],
+                    "brand": "Apple",
+                    "categoryRu": ["Телефоны", "Смартфоны"],
+                }
+            ]
         }
     )
     assert product.external_id == "123"
@@ -54,26 +52,24 @@ def test_parse_products_maps_a_card():
 
 def test_fashion_variant_uses_bare_id_and_config_sku_for_offers():
     [product] = parse_products(
-        {"data": {"cards": [{"id": "16540138b", "title": "Shoes", "configSku": "15358806b"}]}}
+        {"data": [{"id": "16540138b", "title": "Shoes", "configSku": "15358806b"}]}
     )
     assert product.external_id == "16540138"
     assert product.offers_ref == "15358806b"
 
 
 def test_card_without_title_is_skipped():
-    assert parse_products({"data": {"cards": [{"id": "1"}]}}) == []
+    assert parse_products({"data": [{"id": "1"}]}) == []
 
 
 def test_malformed_card_fields_do_not_reach_the_database():
     [product] = parse_products(
         {
-            "data": {
-                "cards": [
-                    "garbage",
-                    {"id": "1", "title": 5},
-                    {"id": "2", "title": "Ok", "shopLink": 7, "brand": {}, "previewImages": "x"},
-                ]
-            }
+            "data": [
+                "garbage",
+                {"id": "1", "title": 5},
+                {"id": "2", "title": "Ok", "shopLink": 7, "brand": {}, "previewImages": "x"},
+            ]
         }
     )
     assert (product.external_id, product.url, product.brand) == ("2", None, None)
@@ -147,11 +143,12 @@ def test_request_carries_city_and_category():
 
     def handler(request):
         seen["request"] = request
-        return httpx.Response(200, json={"data": {"cards": []}})
+        return httpx.Response(200, json={"data": []})
 
     client(handler).list_products("Smartphones", ALMATY, 2)
     request = seen["request"]
     assert request.headers["x-ks-city"] == ALMATY
+    assert request.url.path == "/yml/product-view/pl/results"
     assert request.url.params["q"] == ":category:Smartphones"
     assert request.url.params["page"] == "2"
 

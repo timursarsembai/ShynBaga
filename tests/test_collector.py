@@ -139,6 +139,20 @@ def test_single_block_is_tolerated(conn):
     assert result.products_ok == 1
 
 
+def test_broken_later_page_keeps_the_products_already_found(conn):
+    market = FakeMarket(
+        {"1": OfferList([offer("a", 100)])},
+        pages=[[product("1")], MarketplaceError("HTTP 400")],
+    )
+    result = run(conn, market)
+    assert (result.status, result.products_ok, result.error) == ("partial", 1, "HTTP 400")
+    assert conn.execute("SELECT error FROM crawl_runs").fetchone()[0] == "HTTP 400"
+
+
+def test_broken_first_page_fails_the_run(conn):
+    assert run(conn, FakeMarket({}, pages=[MarketplaceError("HTTP 400")])).status == "failed"
+
+
 def test_block_during_discovery_is_recorded(conn):
     result = run(conn, FakeMarket({}, pages=[Blocked("HTTP 429")]))
     assert result.status == "blocked"
@@ -157,7 +171,7 @@ def test_discovery_stops_when_the_server_repeats_a_page():
             calls.append(page)
             return [product("1")]
 
-    assert len(collector.discover(Repeating({}), "Cat", REGION, 100)) == 1
+    assert len(collector.discover(Repeating({}), "Cat", REGION, 100)[0]) == 1
     assert calls == [0, 1]
 
 
@@ -173,6 +187,7 @@ def test_interrupted_run_is_recorded_as_failed(conn):
 
 def test_discovery_stops_at_the_limit_and_deduplicates():
     market = FakeMarket({}, pages=[[product("1"), product("2")], [product("2"), product("3")]])
-    found = collector.discover(market, "Cat", REGION, 3)
+    found, error = collector.discover(market, "Cat", REGION, 3)
     assert [p.external_id for p in found] == ["1", "2", "3"]
-    assert len(collector.discover(market, "Cat", REGION, 1)) == 1
+    assert error is None
+    assert len(collector.discover(market, "Cat", REGION, 1)[0]) == 1

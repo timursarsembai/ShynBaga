@@ -28,11 +28,23 @@ def _utcnow() -> datetime:
 
 def discover(
     market: Marketplace, category: str, region: str, max_products: int
-) -> list[Product]:
+) -> tuple[list[Product], str | None]:
+    """Products found, plus why the listing stopped early, if it did."""
     products: dict[str, Product] = {}
     page = 0
+    error = None
     while len(products) < max_products:
-        cards = market.list_products(category, region, page)
+        try:
+            cards = market.list_products(category, region, page)
+        except Blocked:
+            raise
+        except MarketplaceError as failure:
+            if not products:
+                raise
+            # A broken page must not cost us the products already found.
+            error = str(failure)
+            logger.warning("listing stopped at page %s: %s", page, failure)
+            break
         if not cards:
             break
         known = len(products)
@@ -42,7 +54,7 @@ def discover(
             # A server that ignores the page number would otherwise loop forever.
             break
         page += 1
-    return list(products.values())[:max_products]
+    return list(products.values())[:max_products], error
 
 
 def collect(
@@ -90,7 +102,7 @@ def _collect_products(
     clock: Callable[[], datetime],
     result: RunResult,
 ) -> None:
-    products = discover(market, category, region, max_products)
+    products, result.error = discover(market, category, region, max_products)
     if not products:
         raise MarketplaceError(f"category {category} returned no products")
 
@@ -116,4 +128,5 @@ def _collect_products(
         conn.commit()
         result.products_ok += 1
 
-    result.status = "completed" if result.products_failed == 0 else "partial"
+    clean = result.products_failed == 0 and result.error is None
+    result.status = "completed" if clean else "partial"

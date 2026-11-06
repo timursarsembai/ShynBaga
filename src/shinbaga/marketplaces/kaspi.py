@@ -26,11 +26,9 @@ _LEADING_DIGITS = re.compile(r"^\d+")
 
 
 def parse_products(payload: Any) -> list[Product]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
-        raise MarketplaceError("product list has no data object")
-    cards = payload["data"].get("cards") or []
-    if not isinstance(cards, list):
-        raise MarketplaceError("product list cards is not a list")
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise MarketplaceError("product list has no data list")
+    cards = payload["data"]
     return [p for card in cards if isinstance(card, dict) and (p := _parse_card(card))]
 
 
@@ -125,16 +123,17 @@ class Kaspi:
     def list_products(self, category: str, region: str, page: int) -> list[Product]:
         payload = self._request(
             "GET",
-            "/yml/product-view/pl/filters",
+            # /pl/filters is heavier and answers 400 from page 2 on.
+            "/yml/product-view/pl/results",
             region,
             referer=f"{BASE_URL}/shop/c/{category.lower()}/?c={region}",
             params={
                 "q": f":category:{category}",
-                "text": "",
                 "page": page,
                 "c": region,
                 "ui": "d",
                 "sort": "relevance",
+                "i": -1,
             },
         )
         return parse_products(payload)

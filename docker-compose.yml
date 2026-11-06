@@ -12,6 +12,34 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shinbaga"]
+      interval: 10s
+      retries: 6
+
+  collector:
+    build: .
+    image: shinbaga
+    container_name: shinbaga-collector
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - shinbaga migrate; while true; do shinbaga collect --max-products 1000; sleep 86400; done
+    environment:
+      DATABASE_URL: postgresql://shinbaga:${POSTGRES_PASSWORD}@postgres:5432/shinbaga
+      SHINBAGA_PROXY_URL: ${SHINBAGA_PROXY_URL:-}
+      SHINBAGA_REQUEST_DELAY: ${SHINBAGA_REQUEST_DELAY:-10}
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
 volumes:
   pgdata:

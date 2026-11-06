@@ -8,11 +8,14 @@
 
 ```bash
 cp .env.example .env        # задать пароль и SHINBAGA_PROXY_URL
-docker compose up -d
-docker build -t shinbaga .
-docker run --rm --network host --env-file .env shinbaga migrate
-docker run --rm --network host --env-file .env shinbaga check     # два запроса: есть ли доступ
-docker run --rm --network host --env-file .env shinbaga collect --max-products 1000
+docker compose up -d --build   # база и сборщик: обход сразу, затем раз в сутки
+docker compose logs -f collector
+```
+
+Проверить доступ двумя запросами, не трогая базу:
+
+```bash
+docker run --rm --network host --env-file .env shinbaga check
 ```
 
 Тесты (нужна пустая база `shinbaga_test`, они её стирают):
@@ -32,4 +35,4 @@ docker build -t shinbaga . && docker run --rm --network host --env-file .env --e
 - Один запрос раз в 10 секунд, остановка после трёх отказов подряд.
 - Только публичные данные. Без аккаунтов и обхода капчи.
 
-Описание API Каспи взято из [market-sources](https://github.com/octrow/market-sources) (MIT). Запрос категории пока не проверен на живых данных.
+Описание API Каспи взято из [market-sources](https://github.com/octrow/market-sources) (MIT).

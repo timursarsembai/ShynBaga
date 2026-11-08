@@ -133,6 +133,22 @@ def test_repeated_blocks_stop_the_run(conn):
     assert row == ("blocked", T0, 7)
 
 
+def test_a_streak_of_failures_stops_the_run(conn):
+    offers = {str(i): MarketplaceError("ProxyError on /x") for i in range(20)}
+    result = run(conn, FakeMarket(offers))
+    assert result.status == "failed"
+    assert result.products_failed == collector.MAX_CONSECUTIVE_FAILURES
+
+
+def test_failures_with_successes_between_them_do_not_stop_the_run(conn):
+    offers = {
+        str(i): MarketplaceError("x") if i % 2 else OfferList([offer("a", 100)])
+        for i in range(20)
+    }
+    result = run(conn, FakeMarket(offers))
+    assert (result.status, result.products_ok, result.products_failed) == ("partial", 10, 10)
+
+
 def test_single_block_is_tolerated(conn):
     result = run(conn, FakeMarket({"1": Blocked("x"), "2": OfferList([offer("a", 100)])}))
     assert result.status == "partial"

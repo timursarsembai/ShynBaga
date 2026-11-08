@@ -9,6 +9,7 @@ from shynbaga.marketplaces.kaspi import (
     ALMATY,
     BASE_URL,
     OFFERS_PAGE_SIZE,
+    RETRY_DELAYS,
     Kaspi,
     parse_offers,
     parse_products,
@@ -17,8 +18,26 @@ from shynbaga.marketplaces.kaspi import (
 PRODUCT = Product(external_id="1", title="Phone", offers_ref="1")
 
 
-def client(handler) -> Kaspi:
-    return Kaspi(delay=0, transport=httpx.MockTransport(handler))
+def client(handler, sleeps: list | None = None) -> Kaspi:
+    pauses = sleeps if sleeps is not None else []
+    return Kaspi(delay=0, transport=httpx.MockTransport(handler), sleep=pauses.append)
+
+
+def failing(times: int, failure, then):
+    """A handler that fails `times` times, then answers with `then`."""
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) <= times:
+            return failure(request)
+        return then
+
+    return handler, calls
+
+
+def drop(request):
+    raise httpx.ProxyError("proxy is down")
 
 
 def raw_offers(start: int, count: int) -> list[dict]:
@@ -151,6 +170,47 @@ def test_request_carries_city_and_category():
     assert request.url.path == "/yml/product-view/pl/results"
     assert request.url.params["q"] == ":category:Smartphones"
     assert request.url.params["page"] == "2"
+
+
+def test_connection_failure_is_retried_until_it_works():
+    sleeps = []
+    handler, calls = failing(2, drop, httpx.Response(200, json={"offers": []}))
+    assert client(handler, sleeps).fetch_offers(PRODUCT, ALMATY).offers == []
+    assert len(calls) == 3
+    assert sleeps == list(RETRY_DELAYS[:2])
+
+
+def test_server_error_is_retried():
+    handler, calls = failing(
+        1, lambda request: httpx.Response(503), httpx.Response(200, json={"data": []})
+    )
+    assert client(handler).list_products("Smartphones", ALMATY, 0) == []
+    assert len(calls) == 2
+
+
+def test_retries_give_up_with_an_ordinary_error():
+    sleeps = []
+    handler, calls = failing(99, drop, None)
+    with pytest.raises(MarketplaceError) as caught:
+        client(handler, sleeps).fetch_offers(PRODUCT, ALMATY)
+    assert not isinstance(caught.value, Blocked)
+    assert len(calls) == len(RETRY_DELAYS) + 1
+    assert sleeps == list(RETRY_DELAYS)
+
+
+@pytest.mark.parametrize("status", [403, 429, 404])
+def test_refusals_and_client_errors_are_not_retried(status):
+    handler, calls = failing(99, lambda request: httpx.Response(status), None)
+    with pytest.raises(MarketplaceError):
+        client(handler).fetch_offers(PRODUCT, ALMATY)
+    assert len(calls) == 1
+
+
+def test_challenge_page_is_not_retried():
+    handler, calls = failing(99, lambda request: httpx.Response(200, text="<html>"), None)
+    with pytest.raises(Blocked):
+        client(handler).fetch_offers(PRODUCT, ALMATY)
+    assert len(calls) == 1
 
 
 def test_offers_are_read_across_pages():

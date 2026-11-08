@@ -3,8 +3,10 @@
 Endpoint shapes come from market-sources (MIT, github.com/octrow/market-sources).
 """
 
+import logging
 import re
 import time
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -22,6 +24,14 @@ USER_AGENT = (
 OFFERS_PAGE_SIZE = 32
 MAX_OFFER_PAGES = 5
 CURRENCY = "KZT"
+# About 8.5 minutes in all: longer than the proxy outages seen so far.
+RETRY_DELAYS = (30.0, 60.0, 120.0, 300.0)
+
+logger = logging.getLogger(__name__)
+
+
+class _Transient(MarketplaceError):
+    """The connection or the server failed, not Kaspi's judgement of us, so a retry may work."""
 
 _LEADING_DIGITS = re.compile(r"^\d+")
 _PRODUCT_PATH = re.compile(r"^/shop/(?:[^/]+/)?p/(?:[^/]*-)?(\d+)[a-z]*/?$", re.IGNORECASE)
@@ -154,9 +164,13 @@ class Kaspi:
         proxy: str | None = None,
         delay: float = 10.0,
         transport: httpx.BaseTransport | None = None,
+        retry_delays: tuple[float, ...] = RETRY_DELAYS,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.bytes_received = 0
         self._delay = delay
+        self._retry_delays = retry_delays
+        self._sleep = sleep
         self._last_request = 0.0
         self._http = httpx.Client(
             proxy=proxy,
@@ -232,6 +246,19 @@ class Kaspi:
         )
 
     def _request(self, method: str, path: str, region: str, *, referer: str, **kwargs: Any) -> Any:
+        # Refusals (Blocked) are never retried: hammering a block only makes it worse.
+        for pause in (*self._retry_delays, None):
+            try:
+                return self._request_once(method, path, region, referer=referer, **kwargs)
+            except _Transient as error:
+                if pause is None:
+                    raise
+                logger.warning("%s, retrying in %.0f s", error, pause)
+                self._sleep(pause)
+
+    def _request_once(
+        self, method: str, path: str, region: str, *, referer: str, **kwargs: Any
+    ) -> Any:
         self._pace()
         headers = {
             "referer": referer,
@@ -241,10 +268,12 @@ class Kaspi:
         try:
             response = self._http.request(method, BASE_URL + path, headers=headers, **kwargs)
         except httpx.HTTPError as error:
-            raise MarketplaceError(f"{type(error).__name__} on {path}") from error
+            raise _Transient(f"{type(error).__name__} on {path}") from error
         self.bytes_received += len(response.content)
         if response.status_code in (403, 429):
             raise Blocked(f"HTTP {response.status_code} on {path}")
+        if response.status_code >= 500:
+            raise _Transient(f"HTTP {response.status_code} on {path}")
         if response.status_code != 200:
             raise MarketplaceError(f"HTTP {response.status_code} on {path}")
         try:
@@ -256,7 +285,7 @@ class Kaspi:
     def _pace(self) -> None:
         wait = self._last_request + self._delay - time.monotonic()
         if wait > 0:
-            time.sleep(wait)
+            self._sleep(wait)
         self._last_request = time.monotonic()
 
     def close(self) -> None:

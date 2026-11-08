@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 # One refusal can be a hiccup; several in a row mean the IP is blocked.
 MAX_CONSECUTIVE_BLOCKS = 3
+# Each failure already spent its retries, so a streak means the connection is gone.
+MAX_CONSECUTIVE_FAILURES = 5
 # Single failed products are normal; a larger share means something is wrong.
 ALERT_FAILED_SHARE = 0.1
 
@@ -148,6 +150,7 @@ def _collect_products(
     products = list(found.values())
 
     consecutive_blocks = 0
+    consecutive_failures = 0
     for product in products:
         try:
             offers = market.fetch_offers(product, region)
@@ -159,10 +162,14 @@ def _collect_products(
             continue
         except MarketplaceError as error:
             consecutive_blocks = 0
+            consecutive_failures += 1
             result.products_failed += 1
             logger.warning("product %s failed: %s", product.external_id, error)
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                raise
             continue
         consecutive_blocks = 0
+        consecutive_failures = 0
         now = clock()
         product_id = db.upsert_product(conn, market.key, product, now)
         db.record_offers(conn, market.key, product_id, region, offers, now)

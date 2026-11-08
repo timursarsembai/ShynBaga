@@ -43,14 +43,13 @@ def main() -> int:
             return 1
         args.marketplace, external_id = found
 
-    market = create(
-        args.marketplace,
-        proxy=os.environ.get("SHYNBAGA_PROXY_URL") or None,
-        delay=float(os.environ.get("SHYNBAGA_REQUEST_DELAY") or 10),
-    )
+    proxies = [p.strip() for p in os.environ.get("SHYNBAGA_PROXY_URLS", "").split(",") if p.strip()]
+    delay = float(os.environ.get("SHYNBAGA_REQUEST_DELAY") or 10)
+    if args.command == "check":
+        return _check_each(args, proxies, delay)
+
+    market = create(args.marketplace, proxies=proxies, delay=delay)
     try:
-        if args.command == "check":
-            return _check(market, args.category, args.region)
         if args.command == "lookup":
             with db.connect(os.environ["DATABASE_URL"]) as conn:
                 return _lookup(conn, market, external_id, args.region)
@@ -97,6 +96,19 @@ def _lookup(conn, market, external_id: str, region: str) -> int:
     for moment, price in db.lowest_prices(history):
         print(f"  {moment:%Y-%m-%d %H:%M} UTC  {price}")
     return 0
+
+
+def _check_each(args: argparse.Namespace, proxies: list[str], delay: float) -> int:
+    """Check every proxy on its own, so a dead one does not hide behind the other."""
+    failed = 0
+    for number, proxy in enumerate(proxies or [None], start=1):
+        print(f"proxy {number} of {len(proxies)}" if proxy else "direct connection")
+        market = create(args.marketplace, proxies=[proxy] if proxy else [], delay=delay)
+        try:
+            failed += _check(market, args.category, args.region)
+        finally:
+            market.close()
+    return 1 if failed else 0
 
 
 def _check(market, category: str, region: str) -> int:

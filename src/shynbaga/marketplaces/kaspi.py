@@ -161,7 +161,7 @@ class Kaspi:
     def __init__(
         self,
         *,
-        proxy: str | None = None,
+        proxies: list[str] | None = None,
         delay: float = 10.0,
         transport: httpx.BaseTransport | None = None,
         retry_delays: tuple[float, ...] = RETRY_DELAYS,
@@ -172,9 +172,10 @@ class Kaspi:
         self._retry_delays = retry_delays
         self._sleep = sleep
         self._last_request = 0.0
+        self._proxies = proxies or []
+        self._proxy_index = 0
+        self._transport = transport
         self._client_options = {
-            "proxy": proxy,
-            "transport": transport,
             "timeout": 30,
             "headers": {
                 "user-agent": USER_AGENT,
@@ -183,7 +184,17 @@ class Kaspi:
                 "x-requested-with": "XMLHttpRequest",
             },
         }
-        self._http = httpx.Client(**self._client_options)
+        self._http = self._new_client()
+
+    @property
+    def proxy_number(self) -> int:
+        """1-based number of the proxy in use, for logs: never log the URL, it holds a password."""
+        return self._proxy_index + 1
+
+    def _new_client(self) -> httpx.Client:
+        # A test transport replaces the network, proxy included.
+        proxy = self._proxies[self._proxy_index] if self._proxies and not self._transport else None
+        return httpx.Client(proxy=proxy, transport=self._transport, **self._client_options)
 
     def list_products(self, category: str, region: str, page: int) -> list[Product]:
         payload = self._request(
@@ -254,10 +265,14 @@ class Kaspi:
             except _Transient as error:
                 # A failed proxy connection can stay stuck in the pool, and then every
                 # later request times out waiting for it (PoolTimeout on 2026-11-08).
-                self._reset_connections()
+                # Switching proxies is for broken connections only: after a Blocked we
+                # stop rather than hide from the block behind another IP.
+                self._switch_proxy()
                 if pause is None:
                     raise
-                logger.warning("%s, retrying in %.0f s", error, pause)
+                logger.warning(
+                    "%s, retrying in %.0f s via proxy %s", error, pause, self.proxy_number
+                )
                 self._sleep(pause)
 
     def _request_once(
@@ -286,9 +301,11 @@ class Kaspi:
             # A 200 HTML page instead of JSON is a challenge page.
             raise Blocked(f"non-JSON response on {path}") from None
 
-    def _reset_connections(self) -> None:
+    def _switch_proxy(self) -> None:
+        if self._proxies:
+            self._proxy_index = (self._proxy_index + 1) % len(self._proxies)
         self._http.close()
-        self._http = httpx.Client(**self._client_options)
+        self._http = self._new_client()
 
     def _pace(self) -> None:
         wait = self._last_request + self._delay - time.monotonic()

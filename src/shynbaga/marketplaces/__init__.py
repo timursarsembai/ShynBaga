@@ -60,9 +60,9 @@ def identify(url: str) -> tuple[str, str] | None:
     return ("kaspi", external_id) if external_id else None
 
 
-def create(key: str, *, proxy: str | None, delay: float) -> Marketplace:
+def create(key: str, *, proxies: list[str], delay: float) -> Marketplace:
     if key == "kaspi":
         from shynbaga.marketplaces.kaspi import Kaspi
 
-        return Kaspi(proxy=proxy, delay=delay)
+        return Kaspi(proxies=proxies, delay=delay)
     raise ValueError(f"unknown marketplace: {key}")

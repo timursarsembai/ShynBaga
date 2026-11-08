@@ -198,6 +198,44 @@ def test_giving_up_also_resets_the_connections():
     assert market._http is not first
 
 
+def test_broken_connection_moves_to_the_next_proxy_and_wraps_around():
+    handler, calls = failing(2, drop, httpx.Response(200, json={"offers": []}))
+    market = Kaspi(
+        proxies=["http://u:p@a:1", "http://u:p@b:2"],
+        delay=0,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda seconds: None,
+    )
+    assert market.proxy_number == 1
+    market.fetch_offers(PRODUCT, ALMATY)
+    assert market.proxy_number == 1  # two failures: 1 -> 2 -> 1
+
+
+def test_block_does_not_switch_proxies():
+    market = Kaspi(
+        proxies=["http://u:p@a:1", "http://u:p@b:2"],
+        delay=0,
+        transport=httpx.MockTransport(lambda request: httpx.Response(429)),
+        sleep=lambda seconds: None,
+    )
+    with pytest.raises(Blocked):
+        market.fetch_offers(PRODUCT, ALMATY)
+    assert market.proxy_number == 1
+
+
+def test_retry_log_names_the_proxy_by_number_only(caplog):
+    handler, calls = failing(1, drop, httpx.Response(200, json={"offers": []}))
+    market = Kaspi(
+        proxies=["http://u:secret@a:1", "http://u:secret@b:2"],
+        delay=0,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda seconds: None,
+    )
+    market.fetch_offers(PRODUCT, ALMATY)
+    assert "via proxy 2" in caplog.text
+    assert "secret" not in caplog.text
+
+
 def test_success_keeps_the_connections():
     market = client(lambda request: httpx.Response(200, json={"offers": []}))
     first = market._http

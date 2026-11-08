@@ -32,7 +32,7 @@ services:
       - shynbaga migrate; while true; do shynbaga collect --max-products 1000 --min-interval-hours 6; sleep 600; done
     environment:
       DATABASE_URL: postgresql://shynbaga:${POSTGRES_PASSWORD}@postgres:5432/shynbaga
-      SHYNBAGA_PROXY_URL: ${SHYNBAGA_PROXY_URL:-}
+      SHYNBAGA_PROXY_URLS: ${SHYNBAGA_PROXY_URLS:-}
       SHYNBAGA_REQUEST_DELAY: ${SHYNBAGA_REQUEST_DELAY:-10}
       SHYNBAGA_TELEGRAM_BOT_TOKEN: ${SHYNBAGA_TELEGRAM_BOT_TOKEN:-}
       SHYNBAGA_TELEGRAM_CHAT_ID: ${SHYNBAGA_TELEGRAM_CHAT_ID:-}

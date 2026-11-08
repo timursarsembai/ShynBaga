@@ -8,7 +8,7 @@
 
 ```bash
 cp .env.example .env        # задать пароль и SHYNBAGA_PROXY_URL
-docker compose up -d --build   # база и сборщик: обход сразу, затем раз в сутки
+docker compose up -d --build   # база и сборщик: обход сразу, затем каждые 6 часов от начала прошлого
 docker compose logs -f collector
 ```
 

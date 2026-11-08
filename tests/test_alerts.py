@@ -94,12 +94,12 @@ def test_failed_send_never_breaks_the_run_or_logs_the_token(monkeypatch, caplog)
 
 
 def test_last_run_ignores_interrupted_runs(conn):
-    assert db.last_run_finished_at(conn, "fake", "Cat", REGION) is None
+    assert db.last_run_started_at(conn, "fake", "Cat", REGION) is None
     run(conn, FakeMarket({"1": OfferList([offer("a", 100)])}))
-    assert db.last_run_finished_at(conn, "fake", "Cat", REGION) == T0
+    assert db.last_run_started_at(conn, "fake", "Cat", REGION) == T0
     conn.execute(
         """INSERT INTO crawl_runs (marketplace, category, region, started_at, finished_at, status)
            VALUES ('fake', 'Cat', %s, %s, %s, 'interrupted')""",
-        (REGION, T0, T0 + timedelta(days=1)),
+        (REGION, T0 + timedelta(days=1), T0 + timedelta(days=1)),
     )
-    assert db.last_run_finished_at(conn, "fake", "Cat", REGION) == T0
+    assert db.last_run_started_at(conn, "fake", "Cat", REGION) == T0

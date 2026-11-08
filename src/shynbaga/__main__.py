@@ -23,7 +23,7 @@ def main() -> int:
         "--min-interval-hours",
         type=float,
         default=0,
-        help="skip collect when a run finished this recently, so restarts do not re-crawl",
+        help="skip collect when a run started this recently, so restarts do not re-crawl",
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -62,8 +62,8 @@ def main() -> int:
 def _collect(market, args: argparse.Namespace) -> int:
     try:
         with db.connect(os.environ["DATABASE_URL"]) as conn:
-            finished = db.last_run_finished_at(conn, market.key, args.category, args.region)
-            age = datetime.now(UTC) - finished if finished else None
+            started = db.last_run_started_at(conn, market.key, args.category, args.region)
+            age = datetime.now(UTC) - started if started else None
             if age is not None and age < timedelta(hours=args.min_interval_hours):
                 return 0
             result = collector.collect(

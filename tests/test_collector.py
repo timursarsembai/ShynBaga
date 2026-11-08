@@ -150,6 +150,30 @@ def test_failures_with_successes_between_them_do_not_stop_the_run(conn):
     assert (result.status, result.products_ok, result.products_failed) == ("partial", 10, 10)
 
 
+def test_listing_is_split_between_workers_and_kept_in_page_order():
+    asked = {}
+
+    class Pages(FakeMarket):
+        def list_products(self, category, region, page):
+            asked.setdefault(self.name, []).append(page)
+            return super().list_products(category, region, page)
+
+    pages = [[product(str(n))] for n in range(6)]
+    first, second = Pages({}, pages=pages), Pages({}, pages=pages)
+    first.name, second.name = "first", "second"
+    found, error = collector.discover([first, second], "Cat", REGION, 100)
+    assert [p.external_id for p in found] == [str(n) for n in range(6)]
+    assert error is None
+    assert asked["first"] == [0, 2, 4, 6]
+    assert asked["second"] == [1, 3, 5, 7]
+
+
+def test_block_on_any_listing_worker_stops_the_listing():
+    pages = [[product("1")], Blocked("HTTP 429"), [product("3")], [product("4")]]
+    with pytest.raises(Blocked):
+        collector.discover([FakeMarket({}, pages=pages)] * 2, "Cat", REGION, 100)
+
+
 def test_two_workers_share_the_products_and_both_work(conn):
     import threading
     import time
@@ -230,7 +254,7 @@ def test_discovery_stops_when_the_server_repeats_a_page():
             calls.append(page)
             return [product("1")]
 
-    assert len(collector.discover(Repeating({}), "Cat", REGION, 100)[0]) == 1
+    assert len(collector.discover([Repeating({})], "Cat", REGION, 100)[0]) == 1
     assert calls == [0, 1]
 
 
@@ -246,7 +270,7 @@ def test_interrupted_run_is_recorded_as_failed(conn):
 
 def test_discovery_stops_at_the_limit_and_deduplicates():
     market = FakeMarket({}, pages=[[product("1"), product("2")], [product("2"), product("3")]])
-    found, error = collector.discover(market, "Cat", REGION, 3)
+    found, error = collector.discover([market], "Cat", REGION, 3)
     assert [p.external_id for p in found] == ["1", "2", "3"]
     assert error is None
-    assert len(collector.discover(market, "Cat", REGION, 1)[0]) == 1
+    assert len(collector.discover([market], "Cat", REGION, 1)[0]) == 1

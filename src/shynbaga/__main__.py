@@ -43,14 +43,20 @@ def main() -> int:
             return 1
         args.marketplace, external_id = found
 
-    proxies = [p.strip() for p in os.environ.get("SHYNBAGA_PROXY_URLS", "").split(",") if p.strip()]
-    delay = float(os.environ.get("SHYNBAGA_REQUEST_DELAY") or 10)
+    proxies = _urls("SHYNBAGA_PROXY_URLS")
+    backups = _urls("SHYNBAGA_BACKUP_PROXY_URLS")
+    delay = float(os.environ.get("SHYNBAGA_REQUEST_DELAY") or 20)
     if args.command == "check":
-        return _check_each(args, proxies, delay)
+        return _check_each(args, proxies + backups, delay)
 
-    # One worker per proxy, each starting from its own and falling back to the others.
+    # One worker per own proxy. A broken connection moves a worker to the backups
+    # first, so the other worker's IP does not take double load.
     markets = [
-        create(args.marketplace, proxies=proxies[i:] + proxies[:i], delay=delay)
+        create(
+            args.marketplace,
+            proxies=[proxies[i], *backups, *proxies[i + 1 :], *proxies[:i]] if proxies else backups,
+            delay=delay,
+        )
         for i in range(max(len(proxies), 1))
     ]
     try:
@@ -61,6 +67,10 @@ def main() -> int:
     finally:
         for market in markets:
             market.close()
+
+
+def _urls(name: str) -> list[str]:
+    return [url.strip() for url in os.environ.get(name, "").split(",") if url.strip()]
 
 
 def _collect(markets, args: argparse.Namespace) -> int:

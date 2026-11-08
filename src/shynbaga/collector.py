@@ -51,33 +51,76 @@ def _utcnow() -> datetime:
 
 
 def discover(
-    market: Marketplace, category: str, region: str, max_products: int
+    markets: list[Marketplace], category: str, region: str, max_products: int
 ) -> tuple[list[Product], str | None]:
-    """Products found, plus why the listing stopped early, if it did."""
+    """Products found, plus why the listing stopped early, if it did.
+
+    Worker k reads pages k, k + n, k + 2n, ... so the listing is split between them.
+    """
+    lock = threading.Lock()
+    pages: dict[int, list[Product]] = {}
+    seen: set[str] = set()
+    failures: list[tuple[int, MarketplaceError]] = []
+    crashes: list[BaseException] = []
+
+    def walk(market: Marketplace, page: int) -> None:
+        own: set[str] = set()
+        while True:
+            with lock:
+                if (
+                    crashes
+                    or len(seen) >= max_products
+                    or any(isinstance(f, Blocked) for _, f in failures)
+                ):
+                    return
+            try:
+                cards = market.list_products(category, region, page)
+            except MarketplaceError as failure:
+                with lock:
+                    failures.append((page, failure))
+                return
+            except BaseException as crash:  # a bug or an interrupt: re-raised below
+                with lock:
+                    crashes.append(crash)
+                return
+            ids = {card.external_id for card in cards}
+            # An empty page ends the category; a page of only known products means
+            # the server ignores the page number and would otherwise loop forever.
+            if not ids or ids <= own:
+                return
+            own |= ids
+            with lock:
+                pages[page] = cards
+                seen.update(ids)
+            page += len(markets)
+
+    workers = [
+        threading.Thread(target=walk, args=(market, k), daemon=True)
+        for k, market in enumerate(markets)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    if crashes:
+        raise crashes[0]
+    failures.sort(key=lambda f: f[0])
+    for _, failure in failures:
+        if isinstance(failure, Blocked):
+            raise failure
     products: dict[str, Product] = {}
-    page = 0
-    error = None
-    while len(products) < max_products:
-        try:
-            cards = market.list_products(category, region, page)
-        except Blocked:
-            raise
-        except MarketplaceError as failure:
-            if not products:
-                raise
-            # A broken page must not cost us the products already found.
-            error = str(failure)
-            logger.warning("listing stopped at page %s: %s", page, failure)
-            break
-        if not cards:
-            break
-        known = len(products)
-        for card in cards:
+    for page in sorted(pages):
+        for card in pages[page]:
             products.setdefault(card.external_id, card)
-        if len(products) == known:
-            # A server that ignores the page number would otherwise loop forever.
-            break
-        page += 1
+    if failures and not products:
+        raise failures[0][1]
+    error = None
+    if failures:
+        # A broken page must not cost us the products already found.
+        page, failure = failures[0]
+        error = str(failure)
+        logger.warning("listing stopped at page %s: %s", page, failure)
     return list(products.values())[:max_products], error
 
 
@@ -198,7 +241,7 @@ def _collect_products(
     result: RunResult,
 ) -> None:
     key = markets[0].key
-    products, result.error = discover(markets[0], category, region, max_products)
+    products, result.error = discover(markets, category, region, max_products)
     if not products:
         raise MarketplaceError(f"category {category} returned no products")
     found = {p.external_id: p for p in db.requested_products(conn, key)}

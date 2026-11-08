@@ -29,11 +29,12 @@ services:
     entrypoint:
       - sh
       - -c
-      - shynbaga migrate; while true; do shynbaga collect --max-products 3000 --min-interval-hours 6; sleep 600; done
+      - shynbaga migrate; while true; do shynbaga collect --max-products 1800 --min-interval-hours 6; sleep 600; done
     environment:
       DATABASE_URL: postgresql://shynbaga:${POSTGRES_PASSWORD}@postgres:5432/shynbaga
       SHYNBAGA_PROXY_URLS: ${SHYNBAGA_PROXY_URLS:-}
-      SHYNBAGA_REQUEST_DELAY: ${SHYNBAGA_REQUEST_DELAY:-10}
+      SHYNBAGA_BACKUP_PROXY_URLS: ${SHYNBAGA_BACKUP_PROXY_URLS:-}
+      SHYNBAGA_REQUEST_DELAY: ${SHYNBAGA_REQUEST_DELAY:-20}
       SHYNBAGA_TELEGRAM_BOT_TOKEN: ${SHYNBAGA_TELEGRAM_BOT_TOKEN:-}
       SHYNBAGA_TELEGRAM_CHAT_ID: ${SHYNBAGA_TELEGRAM_CHAT_ID:-}
     mem_limit: 256m

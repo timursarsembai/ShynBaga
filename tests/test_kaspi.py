@@ -211,6 +211,20 @@ def test_broken_connection_moves_to_the_next_proxy_and_wraps_around():
     assert market.proxy_number == 1  # two failures: 1 -> 2 -> 1
 
 
+def test_next_request_goes_back_to_the_own_proxy():
+    handler, calls = failing(1, drop, httpx.Response(200, json={"offers": []}))
+    market = Kaspi(
+        proxies=["http://u:p@a:1", "http://u:p@b:2"],
+        delay=0,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda seconds: None,
+    )
+    market.fetch_offers(PRODUCT, ALMATY)
+    assert market.proxy_number == 2  # the retry succeeded on the backup
+    market.fetch_offers(PRODUCT, ALMATY)
+    assert market.proxy_number == 1
+
+
 def test_block_does_not_switch_proxies():
     market = Kaspi(
         proxies=["http://u:p@a:1", "http://u:p@b:2"],

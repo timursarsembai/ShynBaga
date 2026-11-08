@@ -258,6 +258,11 @@ class Kaspi:
         )
 
     def _request(self, method: str, path: str, region: str, *, referer: str, **kwargs: Any) -> Any:
+        if self._proxy_index != 0:
+            # Back to our own proxy: parallel workers each have one, and staying on
+            # the backup after a hiccup would leave two workers on a single IP.
+            self._proxy_index = -1
+            self._switch_proxy()
         # Refusals (Blocked) are never retried: hammering a block only makes it worse.
         for pause in (*self._retry_delays, None):
             try:

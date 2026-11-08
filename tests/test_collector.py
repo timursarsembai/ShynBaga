@@ -40,7 +40,8 @@ class FakeMarket:
 
 
 def run(conn, market, at=T0, max_products=100):
-    return collector.collect(conn, market, "Cat", REGION, max_products, clock=lambda: at)
+    markets = market if isinstance(market, list) else [market]
+    return collector.collect(conn, markets, "Cat", REGION, max_products, clock=lambda: at)
 
 
 def intervals(conn):
@@ -147,6 +148,48 @@ def test_failures_with_successes_between_them_do_not_stop_the_run(conn):
     }
     result = run(conn, FakeMarket(offers))
     assert (result.status, result.products_ok, result.products_failed) == ("partial", 10, 10)
+
+
+def test_two_workers_share_the_products_and_both_work(conn):
+    import threading
+    import time
+
+    class Recording(FakeMarket):
+        def fetch_offers(self, item, region):
+            time.sleep(0.01)  # let the other worker take its turn
+            self.seen.append(item.external_id)
+            return super().fetch_offers(item, region)
+
+    offers = {str(i): OfferList([offer("a", 100 + i)]) for i in range(20)}
+    first, second = Recording(offers), Recording(offers)
+    first.seen, second.seen = [], []
+    first.bytes_received, second.bytes_received = 3, 4
+    result = run(conn, [first, second])
+    assert (result.status, result.products_ok) == ("completed", 20)
+    assert first.seen and second.seen
+    assert sorted(first.seen + second.seen, key=int) == [str(i) for i in range(20)]
+    assert conn.execute("SELECT bytes_received FROM crawl_runs").fetchone()[0] == 7
+    assert conn.execute("SELECT count(*) FROM price_intervals").fetchone()[0] == 20
+    assert threading.active_count() == 1
+
+
+def test_blocks_from_parallel_workers_stop_every_worker(conn):
+    import threading
+
+    offers = {str(i): Blocked("HTTP 429") for i in range(50)}
+    result = run(conn, [FakeMarket(offers), FakeMarket(offers)])
+    assert result.status == "blocked"
+    assert result.products_failed == collector.MAX_CONSECUTIVE_BLOCKS
+    assert threading.active_count() == 1
+
+
+def test_unexpected_worker_error_fails_the_run_and_is_raised(conn):
+    import threading
+
+    with pytest.raises(ZeroDivisionError):
+        run(conn, FakeMarket({"1": ZeroDivisionError()}))
+    assert conn.execute("SELECT status FROM crawl_runs").fetchone()[0] == "failed"
+    assert threading.active_count() == 1
 
 
 def test_single_block_is_tolerated(conn):

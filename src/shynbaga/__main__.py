@@ -48,17 +48,23 @@ def main() -> int:
     if args.command == "check":
         return _check_each(args, proxies, delay)
 
-    market = create(args.marketplace, proxies=proxies, delay=delay)
+    # One worker per proxy, each starting from its own and falling back to the others.
+    markets = [
+        create(args.marketplace, proxies=proxies[i:] + proxies[:i], delay=delay)
+        for i in range(max(len(proxies), 1))
+    ]
     try:
         if args.command == "lookup":
             with db.connect(os.environ["DATABASE_URL"]) as conn:
-                return _lookup(conn, market, external_id, args.region)
-        return _collect(market, args)
+                return _lookup(conn, markets[0], external_id, args.region)
+        return _collect(markets, args)
     finally:
-        market.close()
+        for market in markets:
+            market.close()
 
 
-def _collect(market, args: argparse.Namespace) -> int:
+def _collect(markets, args: argparse.Namespace) -> int:
+    market = markets[0]
     try:
         with db.connect(os.environ["DATABASE_URL"]) as conn:
             db.close_abandoned_runs(conn, market.key, datetime.now(UTC))
@@ -67,7 +73,7 @@ def _collect(market, args: argparse.Namespace) -> int:
             if age is not None and age < timedelta(hours=args.min_interval_hours):
                 return 0
             result = collector.collect(
-                conn, market, args.category, args.region, args.max_products
+                conn, markets, args.category, args.region, args.max_products
             )
     except Exception as error:
         # Only the type: database errors can quote the connection string.

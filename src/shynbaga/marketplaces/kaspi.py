@@ -172,17 +172,18 @@ class Kaspi:
         self._retry_delays = retry_delays
         self._sleep = sleep
         self._last_request = 0.0
-        self._http = httpx.Client(
-            proxy=proxy,
-            transport=transport,
-            timeout=30,
-            headers={
+        self._client_options = {
+            "proxy": proxy,
+            "transport": transport,
+            "timeout": 30,
+            "headers": {
                 "user-agent": USER_AGENT,
                 "accept": "application/json, text/*",
                 "accept-language": "ru-RU,ru;q=0.9",
                 "x-requested-with": "XMLHttpRequest",
             },
-        )
+        }
+        self._http = httpx.Client(**self._client_options)
 
     def list_products(self, category: str, region: str, page: int) -> list[Product]:
         payload = self._request(
@@ -251,6 +252,9 @@ class Kaspi:
             try:
                 return self._request_once(method, path, region, referer=referer, **kwargs)
             except _Transient as error:
+                # A failed proxy connection can stay stuck in the pool, and then every
+                # later request times out waiting for it (PoolTimeout on 2026-11-08).
+                self._reset_connections()
                 if pause is None:
                     raise
                 logger.warning("%s, retrying in %.0f s", error, pause)
@@ -281,6 +285,10 @@ class Kaspi:
         except ValueError:
             # A 200 HTML page instead of JSON is a challenge page.
             raise Blocked(f"non-JSON response on {path}") from None
+
+    def _reset_connections(self) -> None:
+        self._http.close()
+        self._http = httpx.Client(**self._client_options)
 
     def _pace(self) -> None:
         wait = self._last_request + self._delay - time.monotonic()

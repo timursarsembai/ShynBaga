@@ -62,6 +62,7 @@ def main() -> int:
 def _collect(market, args: argparse.Namespace) -> int:
     try:
         with db.connect(os.environ["DATABASE_URL"]) as conn:
+            db.close_abandoned_runs(conn, market.key, datetime.now(UTC))
             started = db.last_run_started_at(conn, market.key, args.category, args.region)
             age = datetime.now(UTC) - started if started else None
             if age is not None and age < timedelta(hours=args.min_interval_hours):

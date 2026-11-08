@@ -54,6 +54,17 @@ def start_run(
     return row[0]
 
 
+def close_abandoned_runs(conn: psycopg.Connection, marketplace: str, now: datetime) -> int:
+    """Mark runs a killed collector left as running; only one collector runs at a time."""
+    count = conn.execute(
+        """UPDATE crawl_runs SET status = 'interrupted', finished_at = %s
+           WHERE marketplace = %s AND status = 'running'""",
+        (now, marketplace),
+    ).rowcount
+    conn.commit()
+    return count
+
+
 def last_run_started_at(
     conn: psycopg.Connection, marketplace: str, category: str, region: str
 ) -> datetime | None:

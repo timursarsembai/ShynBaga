@@ -93,6 +93,28 @@ def test_failed_send_never_breaks_the_run_or_logs_the_token(monkeypatch, caplog)
     assert "secret" not in caplog.text
 
 
+def test_abandoned_run_is_closed_and_no_longer_delays_the_next(conn):
+    conn.execute(
+        """INSERT INTO crawl_runs (marketplace, category, region, started_at)
+           VALUES ('fake', 'Cat', %s, %s)""",
+        (REGION, T0),
+    )
+    later = T0 + timedelta(hours=1)
+    assert db.close_abandoned_runs(conn, "fake", later) == 1
+    row = conn.execute("SELECT status, finished_at FROM crawl_runs").fetchone()
+    assert row == ("interrupted", later)
+    assert db.last_run_started_at(conn, "fake", "Cat", REGION) is None
+
+
+def test_closing_abandoned_runs_leaves_other_marketplaces(conn):
+    conn.execute(
+        """INSERT INTO crawl_runs (marketplace, category, region, started_at)
+           VALUES ('other', 'Cat', %s, %s)""",
+        (REGION, T0),
+    )
+    assert db.close_abandoned_runs(conn, "fake", T0) == 0
+
+
 def test_last_run_ignores_interrupted_runs(conn):
     assert db.last_run_started_at(conn, "fake", "Cat", REGION) is None
     run(conn, FakeMarket({"1": OfferList([offer("a", 100)])}))

@@ -180,6 +180,31 @@ def test_connection_failure_is_retried_until_it_works():
     assert sleeps == list(RETRY_DELAYS[:2])
 
 
+def test_retry_starts_with_fresh_connections():
+    handler, calls = failing(1, drop, httpx.Response(200, json={"offers": []}))
+    market = client(handler)
+    first = market._http
+    market.fetch_offers(PRODUCT, ALMATY)
+    assert market._http is not first
+    assert first.is_closed
+
+
+def test_giving_up_also_resets_the_connections():
+    handler, calls = failing(99, drop, None)
+    market = client(handler)
+    first = market._http
+    with pytest.raises(MarketplaceError):
+        market.fetch_offers(PRODUCT, ALMATY)
+    assert market._http is not first
+
+
+def test_success_keeps_the_connections():
+    market = client(lambda request: httpx.Response(200, json={"offers": []}))
+    first = market._http
+    market.fetch_offers(PRODUCT, ALMATY)
+    assert market._http is first
+
+
 def test_server_error_is_retried():
     handler, calls = failing(
         1, lambda request: httpx.Response(503), httpx.Response(200, json={"data": []})

@@ -140,7 +140,7 @@ def collect(
     run_id = db.start_run(conn, key, category, region, clock())
     result = RunResult(status="running")
     try:
-        _collect_products(conn, markets, category, region, max_products, clock, result)
+        _collect_products(conn, markets, category, region, max_products, clock, result, run_id)
     except MarketplaceError as error:
         conn.rollback()
         result.status = "blocked" if isinstance(error, Blocked) else "failed"
@@ -186,6 +186,7 @@ def track(
     now = clock()
     product_id = db.upsert_product(conn, market.key, product, now)
     db.record_offers(conn, market.key, product_id, region, offers, now)
+    db.record_snapshot(conn, product_id, region, product, offers, now)
     db.mark_requested(conn, market.key, external_id, now)
     conn.commit()
 
@@ -248,11 +249,14 @@ def _collect_products(
     max_products: int,
     clock: Callable[[], datetime],
     result: RunResult,
+    run_id: int,
 ) -> None:
     key = markets[0].key
     products, result.error = discover(markets, category, region, max_products)
     if not products:
         raise MarketplaceError(f"category {category} returned no products")
+    # Place in the category listing, 1 = first: the marketplace's popularity order.
+    positions = {p.external_id: n for n, p in enumerate(products, start=1)}
     found = {p.external_id: p for p in db.requested_products(conn, key)}
     found.update({p.external_id: p for p in products})
     products = list(found.values())
@@ -282,6 +286,16 @@ def _collect_products(
             now = clock()
             product_id = db.upsert_product(conn, key, product, now)
             db.record_offers(conn, key, product_id, region, outcome, now)
+            db.record_snapshot(
+                conn,
+                product_id,
+                region,
+                product,
+                outcome,
+                now,
+                run_id=run_id,
+                position=positions.get(product.external_id),
+            )
             conn.commit()
             result.products_ok += 1
 

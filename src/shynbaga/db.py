@@ -4,6 +4,7 @@ from importlib.resources import files
 from typing import NamedTuple
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from shynbaga.marketplaces import Offer, OfferList, Product
 
@@ -105,8 +106,9 @@ def upsert_product(
 ) -> int:
     row = conn.execute(
         """INSERT INTO products (marketplace, external_id, title, brand, category_path,
-                                 url, image_url, offers_ref, first_seen_at, last_seen_at)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                 url, image_url, offers_ref, listed_at,
+                                 first_seen_at, last_seen_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (marketplace, external_id) DO UPDATE SET
                title = EXCLUDED.title,
                brand = EXCLUDED.brand,
@@ -114,6 +116,7 @@ def upsert_product(
                url = EXCLUDED.url,
                image_url = EXCLUDED.image_url,
                offers_ref = EXCLUDED.offers_ref,
+               listed_at = COALESCE(EXCLUDED.listed_at, products.listed_at),
                last_seen_at = EXCLUDED.last_seen_at
            RETURNING id""",
         (
@@ -125,6 +128,7 @@ def upsert_product(
             product.url,
             product.image_url,
             product.offers_ref,
+            product.listed_at,
             now,
             now,
         ),
@@ -144,7 +148,52 @@ def _upsert_seller(
            RETURNING id""",
         (marketplace, offer.seller_id, offer.seller_name, offer.seller_url, now, now),
     ).fetchone()
+    if offer.seller_rating is not None or offer.seller_reviews_count is not None:
+        conn.execute(
+            """INSERT INTO seller_snapshots (seller_id, observed_on, rating, reviews_count)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (seller_id, observed_on) DO UPDATE SET
+                   rating = EXCLUDED.rating, reviews_count = EXCLUDED.reviews_count""",
+            (row[0], now.date(), offer.seller_rating, offer.seller_reviews_count),
+        )
     return row[0]
+
+
+def record_snapshot(
+    conn: psycopg.Connection,
+    product_id: int,
+    region: str,
+    product: Product,
+    offers: OfferList,
+    now: datetime,
+    *,
+    run_id: int | None = None,
+    position: int | None = None,
+) -> None:
+    m = product.metrics
+    conn.execute(
+        """INSERT INTO product_snapshots
+               (product_id, run_id, region, observed_at, position, rating, reviews_count,
+                price, list_price, price_with_bonus, delivery, promos,
+                offers_total, offers_seen)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (
+            product_id,
+            run_id,
+            region,
+            now,
+            position,
+            m.rating if m else None,
+            m.reviews_count if m else None,
+            m.price if m else None,
+            m.list_price if m else None,
+            m.price_with_bonus if m else None,
+            m.delivery if m else None,
+            Jsonb(list(m.promos) if m else []),
+            offers.total,
+            len(offers.offers),
+        ),
+    )
 
 
 def record_offers(

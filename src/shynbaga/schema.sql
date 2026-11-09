@@ -59,3 +59,35 @@ ALTER TABLE sellers ADD COLUMN IF NOT EXISTS url text;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS offers_ref text;
 -- Set when someone looked the product up: it stays tracked outside the crawled top.
 ALTER TABLE products ADD COLUMN IF NOT EXISTS requested_at timestamptz;
+
+-- Analytics: what a listing card showed at each crawl. Card fields are null for
+-- products fetched outside a crawl, such as a lookup.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS listed_at timestamptz;
+CREATE TABLE IF NOT EXISTS product_snapshots (
+    id               bigserial PRIMARY KEY,
+    product_id       bigint NOT NULL REFERENCES products (id),
+    run_id           bigint REFERENCES crawl_runs (id),
+    region           text NOT NULL,
+    observed_at      timestamptz NOT NULL,
+    position         integer,
+    rating           numeric(3, 2),
+    reviews_count    integer,
+    price            numeric(14, 2),
+    list_price       numeric(14, 2),
+    price_with_bonus numeric(14, 2),
+    delivery         text,
+    promos           jsonb NOT NULL DEFAULT '[]',
+    offers_total     integer,
+    offers_seen      integer NOT NULL
+);
+CREATE INDEX IF NOT EXISTS product_snapshots_history
+    ON product_snapshots (product_id, region, observed_at);
+
+-- A seller's rating and review count, the latest value of each day.
+CREATE TABLE IF NOT EXISTS seller_snapshots (
+    seller_id     bigint NOT NULL REFERENCES sellers (id),
+    observed_on   date NOT NULL,
+    rating        numeric(3, 2),
+    reviews_count integer,
+    PRIMARY KEY (seller_id, observed_on)
+);

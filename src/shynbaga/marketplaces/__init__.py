@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class MarketplaceError(Exception):
@@ -9,6 +10,20 @@ class MarketplaceError(Exception):
 
 class Blocked(MarketplaceError):
     """The marketplace refused us; continuing would only make the block worse."""
+
+
+@dataclass(frozen=True)
+class CardMetrics:
+    """What a listing card says about a product at one moment, kept for analytics."""
+
+    rating: Decimal | None = None
+    reviews_count: int | None = None
+    price: Decimal | None = None
+    # The crossed-out price; above `price` it claims a discount.
+    list_price: Decimal | None = None
+    price_with_bonus: Decimal | None = None
+    delivery: str | None = None
+    promos: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -21,6 +36,8 @@ class Product:
     image_url: str | None = None
     brand: str | None = None
     category_path: tuple[str, ...] = ()
+    listed_at: datetime | None = None
+    metrics: CardMetrics | None = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +47,8 @@ class Offer:
     price: Decimal
     currency: str
     seller_url: str | None = None
+    seller_rating: Decimal | None = None
+    seller_reviews_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +56,8 @@ class OfferList:
     offers: list[Offer] = field(default_factory=list)
     # False when sellers may be missing, so absence must not read as "stopped selling".
     complete: bool = True
+    # How many offers the marketplace says the product has.
+    total: int | None = None
 
 
 class Marketplace(Protocol):

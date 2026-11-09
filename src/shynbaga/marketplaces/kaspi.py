@@ -13,7 +13,16 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from shynbaga.marketplaces import Blocked, MarketplaceError, Offer, OfferList, Product
+from datetime import datetime
+
+from shynbaga.marketplaces import (
+    Blocked,
+    CardMetrics,
+    MarketplaceError,
+    Offer,
+    OfferList,
+    Product,
+)
 
 BASE_URL = "https://kaspi.kz"
 ALMATY = "750000000"
@@ -91,11 +100,53 @@ def _parse_card(card: dict) -> Product | None:
         category_path=tuple(c for c in category if isinstance(c, str))
         if isinstance(category, list)
         else (),
+        listed_at=_moment(card.get("createdTime")),
+        metrics=CardMetrics(
+            rating=_rating(card.get("rating")),
+            reviews_count=_whole(card.get("reviewsQuantity")),
+            price=_price(card.get("unitSalePrice")),
+            list_price=_price(card.get("unitPrice")),
+            price_with_bonus=_price(card.get("priceMinusBonus")),
+            delivery=_text(card.get("deliveryDuration")),
+            promos=_promos(card.get("promo")),
+        ),
     )
 
 
 def _text(raw: object) -> str | None:
     return raw if isinstance(raw, str) and raw else None
+
+
+def _whole(raw: object) -> int | None:
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
+def _rating(raw: object) -> Decimal | None:
+    # Out of range would not fit the column and fail the whole run, not one product.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 <= raw <= 5:
+        return None
+    return Decimal(str(raw)).quantize(Decimal("0.01"))
+
+
+def _moment(raw: object) -> datetime | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else None
+
+
+def _promos(raw: object) -> tuple[dict[str, Any], ...]:
+    """Kaspi's promo badges without their images: codes, types and bonus amounts."""
+    if not isinstance(raw, list):
+        return ()
+    return tuple(
+        {k: v for k, v in promo.items() if k != "img" and isinstance(v, (str, int, float))}
+        for promo in raw
+        if isinstance(promo, dict)
+    )
 
 
 def parse_product(payload: Any, external_id: str) -> Product:
@@ -140,6 +191,8 @@ def parse_offers(payload: Any) -> list[Offer]:
                 price=price,
                 currency=CURRENCY,
                 seller_url=seller_url(str(seller_id)),
+                seller_rating=_rating(raw.get("merchantRating")),
+                seller_reviews_count=_whole(raw.get("merchantReviewsQuantity")),
             )
         )
     return offers
@@ -226,19 +279,23 @@ class Kaspi:
 
     def fetch_offers(self, product: Product, region: str) -> OfferList:
         offers: dict[str, Offer] = {}
+        total = None
         for page in range(MAX_OFFER_PAGES):
-            batch = parse_offers(self._offers_page(product.offers_ref, region, page))
+            payload = self._offers_page(product.offers_ref, region, page)
+            batch = parse_offers(payload)
+            if page == 0:
+                total = _whole(payload.get("offersCount"))
             known = len(offers)
             for offer in batch:
                 current = offers.get(offer.seller_id)
                 if current is None or offer.price < current.price:
                     offers[offer.seller_id] = offer
             if len(batch) < OFFERS_PAGE_SIZE:
-                return OfferList(list(offers.values()))
+                return OfferList(list(offers.values()), total=total)
             if len(offers) == known:
                 # The server repeated a full page, so the rest is out of reach.
                 break
-        return OfferList(list(offers.values()), complete=False)
+        return OfferList(list(offers.values()), complete=False, total=total)
 
     def _offers_page(self, ref: str, region: str, page: int) -> Any:
         return self._request(

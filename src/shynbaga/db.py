@@ -21,6 +21,7 @@ class CurrentPrice(NamedTuple):
 class ProductInfo(NamedTuple):
     title: str
     url: str | None
+    last_seen_at: datetime
 
 
 class PricePeriod(NamedTuple):
@@ -154,6 +155,8 @@ def record_offers(
     offers: OfferList,
     now: datetime,
 ) -> None:
+    # Callers upsert the product first in the same transaction. That row lock keeps a
+    # lookup and the crawler from writing the same product at once.
     rows = conn.execute(
         """SELECT seller_id, id, price, currency, last_seen_at FROM price_intervals
            WHERE product_id = %s AND region = %s AND is_current""",
@@ -185,12 +188,19 @@ def record_offers(
             _close(conn, interval.id)
 
 
-def is_known_product(conn: psycopg.Connection, marketplace: str, external_id: str) -> bool:
+def known_product(
+    conn: psycopg.Connection, marketplace: str, external_id: str
+) -> tuple[Product, datetime] | None:
+    """The stored product and when its prices were last fetched, or None if it is new."""
     row = conn.execute(
-        "SELECT 1 FROM products WHERE marketplace = %s AND external_id = %s",
+        """SELECT external_id, title, COALESCE(offers_ref, external_id), url, image_url,
+                  brand, category_path, last_seen_at
+           FROM products WHERE marketplace = %s AND external_id = %s""",
         (marketplace, external_id),
     ).fetchone()
-    return row is not None
+    if row is None:
+        return None
+    return Product(*row[:6], category_path=tuple(row[6])), row[7]
 
 
 def mark_requested(
@@ -217,7 +227,8 @@ def product_history(
     conn: psycopg.Connection, marketplace: str, external_id: str, region: str
 ) -> tuple[ProductInfo, list[PricePeriod]] | None:
     row = conn.execute(
-        "SELECT id, title, url FROM products WHERE marketplace = %s AND external_id = %s",
+        """SELECT id, title, url, last_seen_at FROM products
+           WHERE marketplace = %s AND external_id = %s""",
         (marketplace, external_id),
     ).fetchone()
     if row is None:
@@ -230,7 +241,7 @@ def product_history(
            ORDER BY i.first_seen_at, i.price""",
         (row[0], region),
     ).fetchall()
-    return ProductInfo(row[1], row[2]), [PricePeriod(*r) for r in rows]
+    return ProductInfo(row[1], row[2], row[3]), [PricePeriod(*r) for r in rows]
 
 
 def lowest_prices(history: list[PricePeriod]) -> list[tuple[datetime, Decimal]]:

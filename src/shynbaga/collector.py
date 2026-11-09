@@ -4,7 +4,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 
@@ -19,6 +19,8 @@ MAX_CONSECUTIVE_BLOCKS = 3
 MAX_CONSECUTIVE_FAILURES = 5
 # Single failed products are normal; a larger share means something is wrong.
 ALERT_FAILED_SHARE = 0.1
+# A lookup shows prices this old as they are; older ones are fetched again first.
+LOOKUP_FRESH_FOR = timedelta(hours=1)
 
 
 @dataclass
@@ -170,14 +172,21 @@ def track(
     *,
     clock: Callable[[], datetime] = _utcnow,
 ) -> None:
-    """Make sure a product someone asked about is tracked, fetching it if it is new."""
-    if not db.is_known_product(conn, market.key, external_id):
+    """Make sure a product someone asked about is tracked and its prices are fresh."""
+    known = db.known_product(conn, market.key, external_id)
+    if known is None:
         product = market.fetch_product(external_id, region)
-        offers = market.fetch_offers(product, region)
-        now = clock()
-        product_id = db.upsert_product(conn, market.key, product, now)
-        db.record_offers(conn, market.key, product_id, region, offers, now)
-    db.mark_requested(conn, market.key, external_id, clock())
+    else:
+        product, fetched_at = known
+        if clock() - fetched_at < LOOKUP_FRESH_FOR:
+            db.mark_requested(conn, market.key, external_id, clock())
+            conn.commit()
+            return
+    offers = market.fetch_offers(product, region)
+    now = clock()
+    product_id = db.upsert_product(conn, market.key, product, now)
+    db.record_offers(conn, market.key, product_id, region, offers, now)
+    db.mark_requested(conn, market.key, external_id, now)
     conn.commit()
 
 

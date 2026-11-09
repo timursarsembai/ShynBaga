@@ -104,7 +104,7 @@ def _lookup(conn, market, external_id: str, region: str) -> int:
     info, history = db.product_history(conn, market.key, external_id, region)
     print(info.title)
     print(info.url)
-    print("\nТекущие цены:")
+    print(f"\nЦены на {info.last_seen_at:%Y-%m-%d %H:%M} UTC:")
     current = sorted((p for p in history if p.is_current), key=lambda p: p.price)
     for period in current:
         print(f"  {period.price:>12} {period.currency}  {period.seller}  {period.seller_url}")

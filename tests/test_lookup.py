@@ -100,12 +100,27 @@ def test_unknown_product_is_fetched_and_kept_in_later_runs(conn):
     ]
 
 
-def test_known_product_is_not_fetched_again(conn):
+def test_fresh_known_product_is_not_fetched_again(conn):
     run(conn, FakeMarket({"1": OfferList([offer("a", 100)])}))
-    market = TrackingMarket({})
-    collector.track(conn, market, "1", REGION, clock=lambda: T0)
+    market = TrackingMarket({})  # any fetch would fail: it has no offers
+    soon = T0 + collector.LOOKUP_FRESH_FOR - timedelta(minutes=1)
+    collector.track(conn, market, "1", REGION, clock=lambda: soon)
     assert not hasattr(market, "fetched")
     assert db.requested_products(conn, "fake")[0].external_id == "1"
+
+
+def test_stale_known_product_gets_fresh_prices_before_it_is_shown(conn):
+    run(conn, FakeMarket({"1": OfferList([offer("a", 100)])}))
+    market = TrackingMarket({"1": OfferList([offer("a", 90)])})
+    later = T0 + collector.LOOKUP_FRESH_FOR
+    collector.track(conn, market, "1", REGION, clock=lambda: later)
+    assert not hasattr(market, "fetched")  # the stored product is reused, not fetched
+    info, history = db.product_history(conn, "fake", "1", REGION)
+    assert info.last_seen_at == later
+    assert [(p.price, p.is_current) for p in history] == [
+        (Decimal(100), False),
+        (Decimal(90), True),
+    ]
 
 
 def test_history_has_seller_name_and_url(conn):

@@ -53,10 +53,11 @@ def test_product_url_drops_the_city():
     assert product_url("/p/iphone-1/?c=750000000") == "https://kaspi.kz/shop/p/iphone-1/"
 
 
-def test_seller_url_uses_the_canonical_lowercase_form():
-    assert seller_url("Sulpak") == "https://kaspi.kz/shop/info/merchant/sulpak/"
-    assert seller_url("30174702") == "https://kaspi.kz/shop/info/merchant/30174702/"
-    assert seller_url("a/b") == "https://kaspi.kz/shop/info/merchant/a%2Fb/"
+def test_seller_url_uses_the_working_lowercase_form():
+    base = "https://kaspi.kz/shop/info/merchant"
+    assert seller_url("Sulpak") == f"{base}/sulpak/address-tab/"
+    assert seller_url("30174702") == f"{base}/30174702/address-tab/"
+    assert seller_url("a/b") == f"{base}/a%2Fb/address-tab/"
 
 
 def test_parsed_offer_carries_seller_name_and_url():
@@ -64,7 +65,7 @@ def test_parsed_offer_carries_seller_name_and_url():
         {"offers": [{"merchantId": "Sulpak", "merchantName": "Sulpak LLC", "price": 10}]}
     )
     assert parsed.seller_name == "Sulpak LLC"
-    assert parsed.seller_url == "https://kaspi.kz/shop/info/merchant/sulpak/"
+    assert parsed.seller_url == "https://kaspi.kz/shop/info/merchant/sulpak/address-tab/"
 
 
 def test_parse_product_reads_the_card():

@@ -91,3 +91,19 @@ CREATE TABLE IF NOT EXISTS seller_snapshots (
     reviews_count integer,
     PRIMARY KEY (seller_id, observed_on)
 );
+
+-- Seller pages, refreshed about weekly. No phone numbers: personal data for sole traders.
+ALTER TABLE sellers ADD COLUMN IF NOT EXISTS joined_on date;
+ALTER TABLE sellers ADD COLUMN IF NOT EXISTS logo_url text;
+ALTER TABLE sellers ADD COLUMN IF NOT EXISTS profile_checked_at timestamptz;
+CREATE TABLE IF NOT EXISTS seller_profiles (
+    seller_id         bigint NOT NULL REFERENCES sellers (id),
+    observed_on       date NOT NULL,
+    state             text,
+    score             numeric(3, 2),
+    cancelled_pct     numeric(6, 3),
+    returned_pct      numeric(6, 3),
+    late_delivery_pct numeric(6, 3),
+    orders_segment    integer,
+    PRIMARY KEY (seller_id, observed_on)
+);

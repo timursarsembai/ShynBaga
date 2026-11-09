@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -10,6 +10,10 @@ class MarketplaceError(Exception):
 
 class Blocked(MarketplaceError):
     """The marketplace refused us; continuing would only make the block worse."""
+
+
+class NotFound(MarketplaceError):
+    """The marketplace has no such page: asking again will not help."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,22 @@ class Offer:
 
 
 @dataclass(frozen=True)
+class SellerProfile:
+    """A seller's page at one moment. The phone is left out on purpose: for a sole
+    trader it is personal data, and analytics does not need it."""
+
+    joined_on: date | None = None
+    logo_url: str | None = None
+    state: str | None = None
+    score: Decimal | None = None
+    cancelled_pct: Decimal | None = None
+    returned_pct: Decimal | None = None
+    late_delivery_pct: Decimal | None = None
+    # A size bucket, such as 20000 for "about 20 000 orders".
+    orders_segment: int | None = None
+
+
+@dataclass(frozen=True)
 class OfferList:
     offers: list[Offer] = field(default_factory=list)
     # False when sellers may be missing, so absence must not read as "stopped selling".
@@ -69,6 +89,8 @@ class Marketplace(Protocol):
     def fetch_product(self, external_id: str, region: str) -> Product: ...
 
     def fetch_offers(self, product: Product, region: str) -> OfferList: ...
+
+    def fetch_seller(self, seller_id: str) -> SellerProfile: ...
 
     def close(self) -> None: ...
 

@@ -5,13 +5,23 @@ from collections.abc import Callable, Iterator
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TypeVar
 
 import psycopg
 
 from shynbaga import db
-from shynbaga.marketplaces import Blocked, Marketplace, MarketplaceError, OfferList, Product
+from shynbaga.marketplaces import (
+    Blocked,
+    Marketplace,
+    MarketplaceError,
+    NotFound,
+    OfferList,
+    Product,
+)
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+R = TypeVar("R")
 
 # One refusal can be a hiccup; several in a row mean the IP is blocked.
 MAX_CONSECUTIVE_BLOCKS = 3
@@ -21,6 +31,9 @@ MAX_CONSECUTIVE_FAILURES = 5
 ALERT_FAILED_SHARE = 0.1
 # A lookup shows prices this old as they are; older ones are fetched again first.
 LOOKUP_FRESH_FOR = timedelta(hours=1)
+# Seller pages are about 300 KB each and change slowly: a few per run, each weekly.
+SELLER_PROFILES_PER_RUN = 50
+SELLER_PROFILE_EVERY = timedelta(days=7)
 
 
 @dataclass
@@ -191,36 +204,33 @@ def track(
     conn.commit()
 
 
-Outcome = OfferList | BaseException
-
-
-def _fetch_in_parallel(
-    markets: list[Marketplace], products: list[Product], region: str
-) -> Iterator[tuple[Product, Outcome]]:
-    """Offers for every product, in whatever order the workers finish them.
+def _in_parallel(
+    markets: list[Marketplace], items: list[T], call: Callable[[Marketplace, T], R]
+) -> Iterator[tuple[T, R | BaseException]]:
+    """`call` for every item, in whatever order the workers finish them.
 
     Workers only talk to the marketplace; the caller does all database writes, so
     one connection is never shared between threads. Closing the iterator stops
     the workers after the request each one has in flight.
     """
-    todo: queue.SimpleQueue[Product] = queue.SimpleQueue()
-    for product in products:
-        todo.put(product)
-    done: queue.SimpleQueue[tuple[Product, Outcome] | None] = queue.SimpleQueue()
+    todo: queue.SimpleQueue[T] = queue.SimpleQueue()
+    for item in items:
+        todo.put(item)
+    done: queue.SimpleQueue[tuple[T, R | BaseException] | None] = queue.SimpleQueue()
     stop = threading.Event()
 
     def work(market: Marketplace) -> None:
         try:
             while not stop.is_set():
                 try:
-                    product = todo.get_nowait()
+                    item = todo.get_nowait()
                 except queue.Empty:
                     return
                 try:
-                    outcome: Outcome = market.fetch_offers(product, region)
+                    outcome: R | BaseException = call(market, item)
                 except BaseException as error:  # handed to the caller, which decides
                     outcome = error
-                done.put((product, outcome))
+                done.put((item, outcome))
         finally:
             done.put(None)
 
@@ -263,7 +273,10 @@ def _collect_products(
 
     consecutive_blocks = 0
     consecutive_failures = 0
-    with closing(_fetch_in_parallel(markets, products, region)) as outcomes:
+    def offers(market: Marketplace, product: Product) -> OfferList:
+        return market.fetch_offers(product, region)
+
+    with closing(_in_parallel(markets, products, offers)) as outcomes:
         for product, outcome in outcomes:
             if isinstance(outcome, Blocked):
                 result.products_failed += 1
@@ -299,5 +312,34 @@ def _collect_products(
             conn.commit()
             result.products_ok += 1
 
+    _refresh_seller_profiles(conn, markets, clock)
     clean = result.products_failed == 0 and result.error is None
     result.status = "completed" if clean else "partial"
+
+
+def _refresh_seller_profiles(
+    conn: psycopg.Connection, markets: list[Marketplace], clock: Callable[[], datetime]
+) -> None:
+    key = markets[0].key
+    due = db.sellers_due_profile(
+        conn, key, SELLER_PROFILES_PER_RUN, clock() - SELLER_PROFILE_EVERY
+    )
+
+    def profile(market: Marketplace, seller_id: str):
+        return market.fetch_seller(seller_id)
+
+    with closing(_in_parallel(markets, due, profile)) as outcomes:
+        for seller_id, outcome in outcomes:
+            if isinstance(outcome, Blocked):
+                raise outcome
+            if isinstance(outcome, NotFound):
+                db.record_seller_profile(conn, key, seller_id, None, clock())
+            elif isinstance(outcome, MarketplaceError):
+                # Left unchecked, so the next run tries this seller again.
+                logger.warning("seller %s failed: %s", seller_id, outcome)
+                continue
+            elif isinstance(outcome, BaseException):
+                raise outcome
+            else:
+                db.record_seller_profile(conn, key, seller_id, outcome, clock())
+            conn.commit()

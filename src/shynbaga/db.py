@@ -6,7 +6,7 @@ from typing import NamedTuple
 import psycopg
 from psycopg.types.json import Jsonb
 
-from shynbaga.marketplaces import Offer, OfferList, Product
+from shynbaga.marketplaces import Offer, OfferList, Product, SellerProfile
 
 # Past this without an observation, we no longer know the price held in between.
 MAX_OBSERVATION_GAP = timedelta(hours=48)
@@ -157,6 +157,66 @@ def _upsert_seller(
             (row[0], now.date(), offer.seller_rating, offer.seller_reviews_count),
         )
     return row[0]
+
+
+def sellers_due_profile(
+    conn: psycopg.Connection, marketplace: str, limit: int, checked_before: datetime
+) -> list[str]:
+    """Sellers never checked first, then those checked longest ago."""
+    rows = conn.execute(
+        """SELECT external_id FROM sellers
+           WHERE marketplace = %s
+             AND (profile_checked_at IS NULL OR profile_checked_at < %s)
+           ORDER BY profile_checked_at NULLS FIRST, id
+           LIMIT %s""",
+        (marketplace, checked_before, limit),
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def record_seller_profile(
+    conn: psycopg.Connection,
+    marketplace: str,
+    external_id: str,
+    profile: SellerProfile | None,
+    now: datetime,
+) -> None:
+    """Store a seller's page; None marks a seller whose page no longer exists."""
+    row = conn.execute(
+        """UPDATE sellers SET profile_checked_at = %s,
+               joined_on = COALESCE(%s, joined_on), logo_url = COALESCE(%s, logo_url)
+           WHERE marketplace = %s AND external_id = %s
+           RETURNING id""",
+        (
+            now,
+            profile.joined_on if profile else None,
+            profile.logo_url if profile else None,
+            marketplace,
+            external_id,
+        ),
+    ).fetchone()
+    if row is None or profile is None:
+        return
+    conn.execute(
+        """INSERT INTO seller_profiles (seller_id, observed_on, state, score, cancelled_pct,
+                                      returned_pct, late_delivery_pct, orders_segment)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (seller_id, observed_on) DO UPDATE SET
+               state = EXCLUDED.state, score = EXCLUDED.score,
+               cancelled_pct = EXCLUDED.cancelled_pct, returned_pct = EXCLUDED.returned_pct,
+               late_delivery_pct = EXCLUDED.late_delivery_pct,
+               orders_segment = EXCLUDED.orders_segment""",
+        (
+            row[0],
+            now.date(),
+            profile.state,
+            profile.score,
+            profile.cancelled_pct,
+            profile.returned_pct,
+            profile.late_delivery_pct,
+            profile.orders_segment,
+        ),
+    )
 
 
 def record_snapshot(

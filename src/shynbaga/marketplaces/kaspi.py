@@ -3,6 +3,7 @@
 Endpoint shapes come from market-sources (MIT, github.com/octrow/market-sources).
 """
 
+import json
 import logging
 import re
 import time
@@ -19,9 +20,11 @@ from shynbaga.marketplaces import (
     Blocked,
     CardMetrics,
     MarketplaceError,
+    NotFound,
     Offer,
     OfferList,
     Product,
+    SellerProfile,
 )
 
 BASE_URL = "https://kaspi.kz"
@@ -67,9 +70,65 @@ def product_url(link: str) -> str:
     return f"{BASE_URL}/shop{path}" if path.startswith("/p/") else BASE_URL + path
 
 
+def seller_path(seller_id: str) -> str:
+    # The bare /merchant/{id}/ answers 404; Kaspi redirects mixed-case ids to lowercase.
+    return f"/shop/info/merchant/{quote(seller_id.lower(), safe='')}/address-tab/"
+
+
 def seller_url(seller_id: str) -> str:
-    # Kaspi redirects mixed-case ids such as "Sulpak" to the lowercase address.
-    return f"{BASE_URL}/shop/info/merchant/{quote(seller_id.lower(), safe='')}/"
+    return BASE_URL + seller_path(seller_id)
+
+
+_SELLER_DATA = "BACKEND.components.merchant ="
+
+
+def parse_seller_page(html: str) -> SellerProfile:
+    start = html.find(_SELLER_DATA)
+    if start < 0:
+        raise MarketplaceError("seller page has no merchant data")
+    begin = start + len(_SELLER_DATA)
+    while begin < len(html) and html[begin].isspace():
+        begin += 1
+    try:
+        data, _ = json.JSONDecoder().raw_decode(html, begin)
+    except ValueError:
+        raise MarketplaceError("seller page has unreadable merchant data") from None
+    if not isinstance(data, dict):
+        raise MarketplaceError("seller page has unreadable merchant data")
+    metrics = data.get("merchantMetrics") if isinstance(data.get("merchantMetrics"), dict) else {}
+    state = metrics.get("state") if isinstance(metrics.get("state"), dict) else {}
+    orders = metrics.get("orderStatistics")
+    segment = orders.get("ordersTotalSegment") if isinstance(orders, dict) else None
+    created = _moment_or_naive(data.get("created"))
+    return SellerProfile(
+        joined_on=created.date() if created else None,
+        logo_url=_text(data.get("logo")),
+        state=_text(state.get("value")),
+        score=_rating(state.get("score")),
+        cancelled_pct=_percent(metrics, "cancelled"),
+        returned_pct=_percent(metrics, "returned"),
+        late_delivery_pct=_percent(metrics, "lateKaspiDelivery"),
+        orders_segment=int(segment) if isinstance(segment, str) and segment.isdigit() else None,
+    )
+
+
+def _percent(metrics: dict, name: str) -> Decimal | None:
+    entry = metrics.get(name)
+    if not isinstance(entry, dict) or entry.get("notEnoughData") is True:
+        return None
+    raw = entry.get("percentage")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 <= raw <= 100:
+        return None
+    return Decimal(str(raw)).quantize(Decimal("0.001"))
+
+
+def _moment_or_naive(raw: object) -> datetime | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def parse_products(payload: Any) -> list[Product]:
@@ -297,6 +356,16 @@ class Kaspi:
                 break
         return OfferList(list(offers.values()), complete=False, total=total)
 
+    def fetch_seller(self, seller_id: str) -> SellerProfile:
+        html = self._request(
+            "GET",
+            seller_path(seller_id),
+            ALMATY,
+            referer=f"{BASE_URL}/shop/",
+            accept="text/html",
+        )
+        return parse_seller_page(html)
+
     def _offers_page(self, ref: str, region: str, page: int) -> Any:
         return self._request(
             "POST",
@@ -338,14 +407,24 @@ class Kaspi:
                 self._sleep(pause)
 
     def _request_once(
-        self, method: str, path: str, region: str, *, referer: str, **kwargs: Any
+        self,
+        method: str,
+        path: str,
+        region: str,
+        *,
+        referer: str,
+        accept: str | None = None,
+        **kwargs: Any,
     ) -> Any:
+        """Decoded JSON, or the page text when `accept` asks for something else."""
         self._pace()
         headers = {
             "referer": referer,
             "x-ks-city": region,
             "cookie": f"kaspi.storefront.cookie.city={region}",
         }
+        if accept:
+            headers["accept"] = accept
         try:
             response = self._http.request(method, BASE_URL + path, headers=headers, **kwargs)
         except httpx.HTTPError as error:
@@ -355,8 +434,12 @@ class Kaspi:
             raise Blocked(f"HTTP {response.status_code} on {path}")
         if response.status_code >= 500:
             raise _Transient(f"HTTP {response.status_code} on {path}")
+        if response.status_code == 404:
+            raise NotFound(f"HTTP 404 on {path}")
         if response.status_code != 200:
             raise MarketplaceError(f"HTTP {response.status_code} on {path}")
+        if accept and "json" not in accept:
+            return response.text
         try:
             return response.json()
         except ValueError:

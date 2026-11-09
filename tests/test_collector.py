@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 
 from shynbaga import collector
-from shynbaga.marketplaces import Blocked, MarketplaceError, Offer, OfferList, Product
+from shynbaga.marketplaces import Blocked, MarketplaceError, NotFound, Offer, OfferList, Product
 
 T0 = datetime(2026, 11, 1, tzinfo=UTC)
 REGION = "750000000"
@@ -35,6 +35,14 @@ class FakeMarket:
     def fetch_offers(self, item, region):
         answer = self.offers[item.external_id]
         if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    profiles: dict = {}
+
+    def fetch_seller(self, seller_id):
+        answer = self.profiles.get(seller_id, NotFound("HTTP 404"))
+        if isinstance(answer, BaseException):
             raise answer
         return answer
 

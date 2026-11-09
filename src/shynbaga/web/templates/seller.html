@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ s.name }}{% endblock %}
+{% block body %}
+<p><a href="/sellers">← продавцы</a></p>
+<div class="card">
+  {% if s.logo_url %}<img src="{{ s.logo_url }}" alt="" referrerpolicy="no-referrer">{% endif %}
+  <div>
+  <h1>{{ s.name }}</h1>
+  <dl class="kv">
+    <dt>ID Каспи</dt><dd>{{ s.external_id }} {% if s.url %}· <a href="{{ s.url }}" target="_blank" rel="noreferrer noopener">страница на Каспи ↗</a>{% endif %}</dd>
+    <dt>На Каспи с</dt><dd>{{ s.joined_on | when }}</dd>
+    <dt>Рейтинг</dt><dd>{{ s.rating | num(2) if s.rating is not none else '—' }} · отзывов {{ s.reviews_count | num }}</dd>
+    <dt>Статус / оценка</dt><dd>{{ s.state or '—' }} / {{ s.score | num(2) if s.score is not none else '—' }}</dd>
+    <dt>Отмены / возвраты / опоздания</dt><dd>
+      {{ (s.cancelled_pct | num(1)) ~ ' %' if s.cancelled_pct is not none else '—' }} /
+      {{ (s.returned_pct | num(1)) ~ ' %' if s.returned_pct is not none else '—' }} /
+      {{ (s.late_delivery_pct | num(1)) ~ ' %' if s.late_delivery_pct is not none else '—' }}</dd>
+    <dt>Заказов (сегмент)</dt><dd>{{ s.orders_segment | num }}</dd>
+    <dt>Товаров сейчас / всего</dt><dd>{{ s.products_now }} / {{ s.products_ever }}</dd>
+    <dt>Профиль проверен</dt><dd>{{ s.profile_checked_at | when }}</dd>
+    <dt>Впервые / последний раз</dt><dd>{{ s.first_seen_at | when }} / {{ s.last_seen_at | when }}</dd>
+  </dl>
+  </div>
+</div>
+
+<h2>Товары продавца ({{ products | length }})</h2>
+<table>
+<tr><th>Товар</th><th class="n">Его цена</th><th class="n">Лучшая цена сейчас</th><th class="n">Разница</th><th class="n">Продавцов</th><th class="n">Его мин / макс</th><th class="n">Изм.</th><th>С</th><th>Последний раз</th></tr>
+{% for r in products %}
+<tr>
+  <td><a href="/products/{{ r.id }}">{{ r.title }}</a><br><span class="muted">{{ r.external_id }}{% if not r.is_current %} · больше не продаёт{% endif %}</span></td>
+  <td class="n">{{ r.price | money }}</td>
+  <td class="n">{{ r.best_price | money }}</td>
+  <td class="n">{% if r.is_current and r.best_price is not none %}{% if r.price == r.best_price %}<span class="good">лучшая</span>{% else %}+{{ (r.price - r.best_price) | money }}{% endif %}{% else %}—{% endif %}</td>
+  <td class="n">{{ r.sellers_now or 0 }}</td>
+  <td class="n">{{ r.my_min | money }} / {{ r.my_max | money }}</td>
+  <td class="n">{{ r.intervals }}</td>
+  <td class="nw">{{ r.first_seen_at | when }}</td><td class="nw">{{ r.last_seen_at | when }}</td>
+</tr>
+{% else %}<tr><td colspan="9" class="muted">Нет</td></tr>{% endfor %}
+</table>
+
+<h2>Профили по неделям ({{ profiles | length }})</h2>
+<table>
+<tr><th>Дата</th><th>Статус</th><th class="n">Оценка</th><th class="n">Отмены</th><th class="n">Возвраты</th><th class="n">Опоздания</th><th class="n">Заказов (сегмент)</th></tr>
+{% for r in profiles %}
+<tr><td>{{ r.observed_on | when }}</td><td>{{ r.state or '—' }}</td><td class="n">{{ r.score | num(2) if r.score is not none else '—' }}</td>
+<td class="n">{{ (r.cancelled_pct | num(1)) ~ ' %' if r.cancelled_pct is not none else '—' }}</td>
+<td class="n">{{ (r.returned_pct | num(1)) ~ ' %' if r.returned_pct is not none else '—' }}</td>
+<td class="n">{{ (r.late_delivery_pct | num(1)) ~ ' %' if r.late_delivery_pct is not none else '—' }}</td>
+<td class="n">{{ r.orders_segment | num }}</td></tr>
+{% else %}<tr><td colspan="7" class="muted">Профиль ещё не собирали</td></tr>{% endfor %}
+</table>
+
+<h2>Рейтинг по дням ({{ ratings | length }})</h2>
+<table style="width:auto">
+<tr><th>Дата</th><th class="n">Рейтинг</th><th class="n">Отзывов</th></tr>
+{% for r in ratings %}
+<tr><td>{{ r.observed_on | when }}</td><td class="n">{{ r.rating | num(2) if r.rating is not none else '—' }}</td><td class="n">{{ r.reviews_count | num }}</td></tr>
+{% endfor %}
+</table>
+{% endblock %}

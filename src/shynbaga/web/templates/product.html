@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ p.title }}{% endblock %}
+{% block body %}
+<p><a href="/">← товары</a></p>
+<h1>{{ p.title }}</h1>
+<div class="card">
+  <dl class="kv">
+    <dt>ID Каспи</dt><dd>{{ p.external_id }} {% if p.url %}· <a href="{{ p.url }}" target="_blank" rel="noreferrer noopener">открыть на Каспи ↗</a>{% endif %}</dd>
+    <dt>Бренд</dt><dd>{{ p.brand or '—' }}</dd>
+    <dt>Категория</dt><dd>{{ p.category_path | join(' › ') or '—' }}</dd>
+    <dt>Сейчас</dt><dd>от <b>{{ p.min_price | money }}</b> до {{ p.max_price | money }} · продавцов {{ p.sellers_now or 0 }}{% if p.offers_total %} (по данным Каспи {{ p.offers_total }}){% endif %}</dd>
+    <dt>В карточке</dt><dd>{{ p.card_price | money }}{% if p.list_price %} · старая цена {{ p.list_price | money }}{% endif %}{% if p.price_with_bonus %} · с бонусами {{ p.price_with_bonus | money }}{% endif %}</dd>
+    <dt>Рейтинг</dt><dd>{{ p.rating | num(2) if p.rating is not none else '—' }} · отзывов {{ p.reviews_count | num }}</dd>
+    <dt>Место в выдаче</dt><dd>{{ p.position if p.position is not none else '—' }}</dd>
+    <dt>Впервые / последний раз</dt><dd>{{ p.first_seen_at | when }} / {{ p.last_seen_at | when }}</dd>
+    <dt>Запрошен по ссылке</dt><dd>{{ p.requested_at | when }}</dd>
+  </dl>
+</div>
+
+<h2>Минимальная цена среди продавцов</h2>
+{% if chart %}
+<svg class="chart" width="{{ chart.width }}" height="{{ chart.height }}" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img">
+  <polyline points="{{ chart.points }}"/>
+</svg>
+<p class="muted">{{ chart.start | when }} — {{ chart.end | when }} · от {{ chart.low | money }} до {{ chart.high | money }}</p>
+{% else %}<p class="muted">Цен пока нет.</p>{% endif %}
+
+<h2>Текущие предложения ({{ current | length }})</h2>
+<table>
+<tr><th>Продавец</th><th class="n">Цена</th><th>С какого момента</th><th>Последний раз видели</th></tr>
+{% for o in current %}
+<tr><td><a href="/sellers/{{ o.seller_id }}">{{ o.seller }}</a></td><td class="n">{{ o.price | money }}</td><td class="nw">{{ o.first_seen_at | when }}</td><td class="nw">{{ o.last_seen_at | when }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">Нет</td></tr>{% endfor %}
+</table>
+
+<h2>Прошлые цены ({{ past | length }})</h2>
+<table>
+<tr><th>Продавец</th><th class="n">Цена</th><th>С</th><th>По</th></tr>
+{% for o in past %}
+<tr><td><a href="/sellers/{{ o.seller_id }}">{{ o.seller }}</a></td><td class="n">{{ o.price | money }}</td><td class="nw">{{ o.first_seen_at | when }}</td><td class="nw">{{ o.last_seen_at | when }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">Цены пока не менялись</td></tr>{% endfor %}
+</table>
+
+<h2>Снимки карточки ({{ snapshots | length }})</h2>
+<table>
+<tr><th>Когда</th><th class="n">Обход</th><th class="n">Место</th><th class="n">Рейтинг</th><th class="n">Отзывов</th><th class="n">Цена</th><th class="n">Старая</th><th class="n">С бонусами</th><th>Доставка</th><th>Акции</th><th class="n">Продавцов (Каспи / собрано)</th></tr>
+{% for s in snapshots %}
+<tr><td class="nw">{{ s.observed_at | when }}</td><td class="n">{{ s.run_id or 'по ссылке' }}</td><td class="n">{{ s.position if s.position is not none else '—' }}</td>
+<td class="n">{{ s.rating | num(2) if s.rating is not none else '—' }}</td><td class="n">{{ s.reviews_count | num }}</td>
+<td class="n">{{ s.price | money }}</td><td class="n">{{ s.list_price | money }}</td><td class="n">{{ s.price_with_bonus | money }}</td>
+<td>{{ s.delivery | delivery }}</td><td>{% for promo in (s.promos or []) %}<span class="tag">{{ promo | promo }}</span>{% endfor %}</td>
+<td class="n">{{ s.offers_total if s.offers_total is not none else '—' }} / {{ s.offers_seen }}</td></tr>
+{% else %}<tr><td colspan="11" class="muted">Снимков пока нет</td></tr>{% endfor %}
+</table>
+{% endblock %}

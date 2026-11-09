@@ -107,3 +107,12 @@ CREATE TABLE IF NOT EXISTS seller_profiles (
     orders_segment    integer,
     PRIMARY KEY (seller_id, observed_on)
 );
+
+-- The admin site reads through its own role, created once by hand with a password.
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'shynbaga_web') THEN
+        GRANT USAGE ON SCHEMA public TO shynbaga_web;
+        GRANT SELECT ON ALL TABLES IN SCHEMA public TO shynbaga_web;
+    END IF;
+END $$;

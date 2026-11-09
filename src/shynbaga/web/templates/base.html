@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>{% block title %}ShynBaga{% endblock %} · ShynBaga</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <a class="logo" href="/">ShynBaga</a>
+  <nav>
+    <a href="/" class="{{ 'on' if section == 'products' }}">Товары</a>
+    <a href="/sellers" class="{{ 'on' if section == 'sellers' }}">Продавцы</a>
+    <a href="/runs" class="{{ 'on' if section == 'runs' }}">Обходы</a>
+  </nav>
+  <form method="post" action="/logout"><button class="link">Выйти</button></form>
+</header>
+<main>{% block body %}{% endblock %}</main>
+</body>
+</html>

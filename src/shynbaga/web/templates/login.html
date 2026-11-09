@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Вход · ShynBaga</title><link rel="stylesheet" href="/static/app.css"></head>
+<body>
+<form class="login" method="post" action="/login">
+  <h1>ShynBaga</h1>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <input type="hidden" name="next" value="{{ next }}">
+  <label>Логин <input name="username" autocomplete="username" required autofocus></label>
+  <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
+  <button>Войти</button>
+</form>
+</body>
+</html>

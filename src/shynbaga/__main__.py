@@ -13,7 +13,10 @@ DEFAULT_CATEGORY = "Smartphones"
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="shynbaga")
-    parser.add_argument("command", choices=["check", "migrate", "collect", "lookup", "test-alert"])
+    parser.add_argument(
+        "command",
+        choices=["check", "migrate", "collect", "lookup", "test-alert", "hash-password"],
+    )
     parser.add_argument("url", nargs="?", help="product link, for lookup")
     parser.add_argument("--marketplace", default="kaspi")
     parser.add_argument("--category", default=DEFAULT_CATEGORY)
@@ -31,6 +34,17 @@ def main() -> int:
     if args.command == "migrate":
         with db.connect(os.environ["DATABASE_URL"]) as conn:
             db.migrate(conn)
+        return 0
+
+    if args.command == "hash-password":
+        # The password comes on stdin, so it stays out of the shell history.
+        from shynbaga.web.auth import hash_password
+
+        password = sys.stdin.readline().rstrip("\n")
+        if len(password) < 12:
+            print("Пароль короче 12 символов.", file=sys.stderr)
+            return 1
+        print(hash_password(password))
         return 0
 
     if args.command == "test-alert":

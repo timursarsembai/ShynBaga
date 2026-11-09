@@ -44,5 +44,43 @@ services:
         max-size: 10m
         max-file: "3"
 
+  # Draft admin site. Nginx Proxy Manager reaches it as shynbaga-web:8000 over
+  # proxy-network; the client address is taken from NPM's headers only.
+  web:
+    image: shynbaga
+    container_name: shynbaga-web
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint:
+      - uvicorn
+      - --factory
+      - shynbaga.web.app:create_app
+      - --host=0.0.0.0
+      - --port=8000
+      - --proxy-headers
+      - --forwarded-allow-ips=${NPM_ADDRESS:-172.18.0.10}
+      - --no-server-header
+    environment:
+      SHYNBAGA_WEB_DATABASE_URL: postgresql://shynbaga_web:${SHYNBAGA_WEB_DB_PASSWORD:?set SHYNBAGA_WEB_DB_PASSWORD in .env}@postgres:5432/shynbaga
+      SHYNBAGA_WEB_USER: ${SHYNBAGA_WEB_USER:-admin}
+      SHYNBAGA_WEB_PASSWORD_HASH: ${SHYNBAGA_WEB_PASSWORD_HASH:?set SHYNBAGA_WEB_PASSWORD_HASH in .env}
+      SHYNBAGA_WEB_SECRET: ${SHYNBAGA_WEB_SECRET:?set SHYNBAGA_WEB_SECRET in .env}
+    networks:
+      default:
+      proxy-network:
+    mem_limit: 192m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
 volumes:
   pgdata:
+
+networks:
+  proxy-network:
+    external: true

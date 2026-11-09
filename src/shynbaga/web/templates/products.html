@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Товары{% endblock %}
+{% block body %}
+<div class="stats">
+  <span>Товаров <b>{{ totals.products | num }}</b></span>
+  <span>Продавцов <b>{{ totals.sellers | num }}</b></span>
+  <span>Отрезков цен <b>{{ totals.intervals | num }}</b></span>
+  <span>Снимков карточек <b>{{ totals.snapshots | num }}</b></span>
+  <span>Профилей продавцов <b>{{ totals.profiles | num }}</b></span>
+  <span>Обходов <b>{{ totals.runs | num }}</b></span>
+</div>
+<form class="filters" method="get" action="/">
+  <label>Поиск (название, бренд, ID Каспи)<input name="q" value="{{ f.q }}" size="36"></label>
+  <label>Бренд<select name="brand"><option value="">все</option>
+    {% for b in brands %}<option {{ 'selected' if b == f.brand }}>{{ b }}</option>{% endfor %}</select></label>
+  <label>Мин. цена от<input name="price_from" value="{{ f.price_from }}" size="9"></label>
+  <label>до<input name="price_to" value="{{ f.price_to }}" size="9"></label>
+  <label>Показать<select name="only">
+    <option value="">все</option>
+    <option value="changed" {{ 'selected' if f.only == 'changed' }}>с изменениями цен или продавцов</option>
+    <option value="requested" {{ 'selected' if f.only == 'requested' }}>запрошенные по ссылке</option>
+    <option value="no_offers" {{ 'selected' if f.only == 'no_offers' }}>без текущих предложений</option>
+  </select></label>
+  <label>Сортировка<select name="sort">
+    {% for key, label in [('position','место в выдаче'),('price','цена ↑'),('price_desc','цена ↓'),('sellers','продавцов'),('reviews','отзывов'),('changes','изменений цен'),('title','название'),('seen','последнее наблюдение'),('new','новые')] %}
+    <option value="{{ key }}" {{ 'selected' if f.sort == key }}>{{ label }}</option>{% endfor %}
+  </select></label>
+  <button>Найти</button> <a href="/">сбросить</a>
+</form>
+<table>
+<tr><th class="n">Место</th><th>Товар</th><th>Бренд</th><th class="n">Мин. цена</th><th class="n">Макс. цена</th><th class="n">Продавцов</th>
+<th class="n">Цена в карточке</th><th class="n">Старая цена</th><th class="n">Рейтинг</th><th class="n">Отзывов</th><th>Акции</th><th class="n">Изм.</th><th>Последнее наблюдение</th><th></th></tr>
+{% for r in rows %}
+<tr>
+  <td class="n">{{ r.position if r.position is not none else '—' }}</td>
+  <td><a href="/products/{{ r.id }}">{{ r.title }}</a><br><span class="muted">{{ r.external_id }}{% if r.requested_at %} · запрошен{% endif %}</span></td>
+  <td>{{ r.brand or '—' }}</td>
+  <td class="n">{{ r.min_price | money }}</td>
+  <td class="n">{{ r.max_price | money }}</td>
+  <td class="n">{{ r.sellers_now or 0 }}{% if r.offers_total and r.offers_total != r.sellers_now %} <span class="muted">/ {{ r.offers_total }}</span>{% endif %}</td>
+  <td class="n">{{ r.card_price | money }}</td>
+  <td class="n">{{ r.list_price | money }}</td>
+  <td class="n">{{ r.rating | num(1) if r.rating is not none else '—' }}</td>
+  <td class="n">{{ r.reviews_count | num }}</td>
+  <td>{% for promo in (r.promos or []) %}<span class="tag">{{ promo | promo }}</span>{% endfor %}</td>
+  <td class="n">{{ r.intervals }}</td>
+  <td class="nw">{{ r.last_seen_at | when }}</td>
+  <td>{% if r.url %}<a href="{{ r.url }}" target="_blank" rel="noreferrer noopener">Каспи ↗</a>{% endif %}</td>
+</tr>
+{% else %}<tr><td colspan="14" class="muted">Ничего не найдено</td></tr>{% endfor %}
+</table>
+{% include "_pager.html" %}
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Продавцы{% endblock %}
+{% block body %}
+<form class="filters" method="get" action="/sellers">
+  <label>Поиск (название, ID)<input name="q" value="{{ f.q }}" size="36"></label>
+  <label>Показать<select name="only">
+    <option value="">все</option>
+    <option value="profiled" {{ 'selected' if f.only == 'profiled' }}>с профилем</option>
+    <option value="gone" {{ 'selected' if f.only == 'gone' }}>без текущих предложений</option>
+  </select></label>
+  <label>Сортировка<select name="sort">
+    {% for key, label in [('products','товаров сейчас'),('reviews','отзывов'),('rating','рейтинг'),('joined','на Каспи с'),('cancelled','доля отмен'),('name','название'),('seen','последнее наблюдение')] %}
+    <option value="{{ key }}" {{ 'selected' if f.sort == key }}>{{ label }}</option>{% endfor %}
+  </select></label>
+  <button>Найти</button> <a href="/sellers">сбросить</a>
+</form>
+<table>
+<tr><th>Продавец</th><th class="n">Товаров сейчас</th><th class="n">Всего</th><th class="n">Рейтинг</th><th class="n">Отзывов</th><th>На Каспи с</th>
+<th>Статус</th><th class="n">Оценка</th><th class="n">Отмены</th><th class="n">Возвраты</th><th class="n">Опоздания</th><th class="n">Заказов (сегмент)</th><th>Профиль от</th><th>Последнее наблюдение</th><th></th></tr>
+{% for r in rows %}
+<tr>
+  <td><a href="/sellers/{{ r.id }}">{{ r.name }}</a><br><span class="muted">{{ r.external_id }}</span></td>
+  <td class="n">{{ r.products_now }}</td><td class="n">{{ r.products_ever }}</td>
+  <td class="n">{{ r.rating | num(1) if r.rating is not none else '—' }}</td><td class="n">{{ r.reviews_count | num }}</td>
+  <td class="nw">{{ r.joined_on | when }}</td><td>{{ r.state or '—' }}</td>
+  <td class="n">{{ r.score | num(2) if r.score is not none else '—' }}</td>
+  <td class="n">{{ (r.cancelled_pct | num(1)) ~ ' %' if r.cancelled_pct is not none else '—' }}</td>
+  <td class="n">{{ (r.returned_pct | num(1)) ~ ' %' if r.returned_pct is not none else '—' }}</td>
+  <td class="n">{{ (r.late_delivery_pct | num(1)) ~ ' %' if r.late_delivery_pct is not none else '—' }}</td>
+  <td class="n">{{ r.orders_segment | num }}</td>
+  <td class="nw">{{ r.profile_on | when }}</td><td class="nw">{{ r.last_seen_at | when }}</td>
+  <td>{% if r.url %}<a href="{{ r.url }}" target="_blank" rel="noreferrer noopener">Каспи ↗</a>{% endif %}</td>
+</tr>
+{% else %}<tr><td colspan="15" class="muted">Ничего не найдено</td></tr>{% endfor %}
+</table>
+{% include "_pager.html" %}
+{% endblock %}

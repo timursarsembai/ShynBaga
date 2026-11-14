@@ -80,6 +80,14 @@ def data(conn):
                   (3, '750000000', 7000, %(t2)s, %(t2)s, true)""",
         {"t1": T1, "t2": T2},
     )
+    conn.execute(
+        """INSERT INTO category_segments (marketplace, category_code, filters, facet_ids,
+                                          title, products_count, popularity, swept_at,
+                                          swept_products)
+           VALUES ('kaspi', 'Lamps', ':manufacturerName:Philips', '{manufacturerName}',
+                   'Philips', 20, 50, %(t2)s, 17)""",
+        {"t2": T2},
+    )
     conn.execute("UPDATE products SET card_changes = 1, score = 200 WHERE id = 3")
     for product_id in (1, 2):
         db._summarize_offers(conn, product_id)
@@ -204,8 +212,10 @@ def test_catalog_products_and_categories(client):
     assert "<polyline" in lamp and "товары категории" in lamp
     categories = client.get("/categories").text
     assert "Лампы" in categories and "конечная" in categories
+    assert "1 (1)" in categories  # one part, swept
     assert "Лампы" not in client.get("/categories?only=unswept").text
     assert client.get("/categories?sort=bogus;drop").status_code == 200
+    assert client.get("/categories?only=split").status_code == 200
 
 
 def test_seller_filters(client):

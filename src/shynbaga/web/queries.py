@@ -199,12 +199,23 @@ def categories(
         where.append("c.swept_at IS NOT NULL")
     elif only == "unswept":
         where.append("c.is_leaf AND c.swept_at IS NULL")
+    elif only == "split":
+        where.append("c.split_checked_at IS NOT NULL")
     sql = f"""SELECT c.code, c.title, c.depth, c.products_count, c.popularity, c.is_leaf,
                      c.checked_at, c.swept_at, c.swept_products, parent.title AS parent_title,
+                     c.split_checked_at, parts.parts, parts.parts_swept, parts.parts_products,
                      count(*) OVER () AS total
               FROM categories c
               LEFT JOIN categories parent
                      ON parent.marketplace = c.marketplace AND parent.code = c.parent_code
+              LEFT JOIN LATERAL (
+                  SELECT count(*) FILTER (WHERE is_split IS NOT TRUE) AS parts,
+                         count(*) FILTER (WHERE swept_at IS NOT NULL) AS parts_swept,
+                         sum(swept_products) AS parts_products
+                  FROM category_segments s
+                  WHERE s.marketplace = c.marketplace AND s.category_code = c.code
+                    AND NOT s.gone
+              ) parts ON c.is_leaf
               WHERE {" AND ".join(where)}
               ORDER BY {CATEGORY_SORTS.get(sort, CATEGORY_SORTS["popular"])}
               LIMIT %(limit)s OFFSET %(offset)s"""
@@ -223,7 +234,13 @@ def catalog_totals(conn: psycopg.Connection) -> dict:
                                    AND NOT gone) AS unchecked,
                   coalesce(sum(products_count) FILTER (WHERE is_leaf AND NOT gone), 0)
                       AS leaf_products,
-                  coalesce(sum(swept_products) FILTER (WHERE NOT gone), 0) AS swept_products
+                  coalesce(sum(swept_products) FILTER (WHERE NOT gone), 0) AS swept_products,
+                  (SELECT count(*) FROM category_segments
+                   WHERE NOT gone AND is_split IS NOT TRUE) AS parts,
+                  (SELECT count(*) FROM category_segments
+                   WHERE NOT gone AND swept_at IS NOT NULL) AS parts_swept,
+                  (SELECT coalesce(sum(swept_products), 0) FROM category_segments
+                   WHERE NOT gone) AS parts_products
            FROM categories"""
     ).fetchone()
 

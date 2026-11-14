@@ -10,6 +10,7 @@ from shynbaga.marketplaces import (
     CardMetrics,
     Category,
     CategoryCheck,
+    FacetValue,
     Offer,
     OfferList,
     Product,
@@ -409,18 +410,26 @@ def record_card(
     product_id: int,
     region: str,
     category_code: str,
-    position: int,
+    position: int | None,
     metrics: CardMetrics | None,
     now: datetime,
 ) -> None:
-    """What a listing card showed: the product's latest card and its lowest-price history."""
+    """What a listing card showed: the product's latest card and its lowest-price history.
+
+    `position` is the place in the whole leaf's listing; None for a card from a part
+    of the leaf, which keeps the place and popularity estimate from the leaf's sweep.
+    """
     price = metrics.price if metrics else None
     conn.execute(
-        """UPDATE products p SET category_code = %(code)s, position = %(position)s,
+        """UPDATE products p SET category_code = %(code)s,
                card = %(card)s, card_price = %(price)s, card_seen_at = %(now)s,
-               score = (SELECT c.popularity FROM categories c
-                        WHERE c.marketplace = p.marketplace AND c.code = %(code)s)::float8
-                       / %(position)s
+               position = coalesce(%(position)s, position),
+               ranked_at = CASE WHEN %(position)s::integer IS NULL THEN ranked_at
+                                ELSE %(now)s END,
+               score = CASE WHEN %(position)s::integer IS NULL THEN score
+                            ELSE (SELECT c.popularity FROM categories c
+                                  WHERE c.marketplace = p.marketplace
+                                    AND c.code = %(code)s)::float8 / %(position)s END
            WHERE id = %(id)s""",
         {
             "code": category_code,
@@ -496,7 +505,7 @@ def products_due_offers(
                SELECT p.id FROM products p
                JOIN categories c ON c.marketplace = p.marketplace AND c.code = p.category_code
                WHERE p.marketplace = %(m)s AND p.score IS NOT NULL
-                 AND p.card_seen_at >= c.swept_at AND NOT c.gone
+                 AND p.ranked_at >= c.swept_at AND NOT c.gone
                ORDER BY p.score DESC, p.id
                LIMIT %(n)s
            )
@@ -637,30 +646,49 @@ def _upsert_child(
         _bury_below(conn, marketplace, child.code)
 
 
-class Leaf(NamedTuple):
+class Sweep(NamedTuple):
+    """One listing to read: a whole leaf, or a part of it (`segment` set)."""
+
     code: str
     products_count: int
+    segment: int | None = None
+    filters: str = ""
 
 
-# A leaf never swept counts as last swept this long ago.
+# A listing never swept counts as last swept this long ago.
 NEVER_SWEPT_AGE = timedelta(days=30)
-# So a leaf with no popularity figure still comes up now and then.
+# So a listing with no popularity figure still comes up now and then.
 POPULARITY_FLOOR = 100
 
 
-def next_leaf(
+def next_sweep(
     conn: psycopg.Connection, marketplace: str, now: datetime, max_pages: int
-) -> Leaf | None:
-    """The leaf that most needs a sweep: popularity times time since the last sweep,
-    per page a sweep costs. Popular leaves come back often, and every leaf's turn
-    comes eventually."""
+) -> Sweep | None:
+    """The listing that most needs a sweep: popularity times time since the last sweep,
+    per page a sweep costs. Popular ones come back often, and every one's turn comes
+    eventually. Leaves and the unsplit parts of big leaves share the queue."""
     row = conn.execute(
-        """SELECT code, products_count FROM categories
-           WHERE marketplace = %(m)s AND is_leaf AND NOT gone AND products_count > 0
-           ORDER BY (popularity + %(floor)s)::float8
-                    * extract(epoch FROM %(now)s - coalesce(swept_at, %(now)s - %(never)s))
+        """WITH queue AS (
+               SELECT code, products_count, NULL::bigint AS segment, '' AS filters,
+                      popularity + %(floor)s AS weight,
+                      coalesce(swept_at, %(now)s - %(never)s) AS due_since
+               FROM categories
+               WHERE marketplace = %(m)s AND is_leaf AND NOT gone AND products_count > 0
+               UNION ALL
+               -- Parts get no floor (there can be tens of thousands) and wait from
+               -- when they were made. Only parts of leaves still too big to list whole.
+               SELECT s.category_code, s.products_count, s.id, s.filters, s.popularity,
+                      coalesce(s.swept_at, s.created_at, %(now)s)
+               FROM category_segments s
+               JOIN categories c ON c.marketplace = s.marketplace AND c.code = s.category_code
+               WHERE s.marketplace = %(m)s AND NOT s.gone AND s.is_split IS NOT TRUE
+                 AND NOT c.gone AND c.is_leaf AND c.products_count > %(cards)s
+                 AND s.products_count > 0
+           )
+           SELECT code, products_count, segment, filters FROM queue
+           ORDER BY weight::float8 * extract(epoch FROM %(now)s - due_since)
                     / least(greatest(ceil(products_count / 12.0), 1), %(pages)s) DESC,
-                    code
+                    code, segment NULLS FIRST
            LIMIT 1""",
         {
             "m": marketplace,
@@ -668,9 +696,10 @@ def next_leaf(
             "now": now,
             "never": NEVER_SWEPT_AGE,
             "pages": max_pages,
+            "cards": max_pages * 12,
         },
     ).fetchone()
-    return Leaf(*row) if row else None
+    return Sweep(*row) if row else None
 
 
 def mark_swept(
@@ -689,6 +718,180 @@ def mark_swept(
                products_count = greatest(products_count, %s)
            WHERE marketplace = %s AND code = %s""",
         (now, products, count_at_least, marketplace, code),
+    )
+
+
+def mark_segment_swept(
+    conn: psycopg.Connection, segment: int, products: int, now: datetime, *, count_at_least: int = 0
+) -> None:
+    conn.execute(
+        """UPDATE category_segments SET swept_at = %s, swept_products = %s,
+               products_count = greatest(products_count, %s)
+           WHERE id = %s""",
+        (now, products, count_at_least, segment),
+    )
+
+
+def mark_segment_gone(conn: psycopg.Connection, segment: int) -> None:
+    conn.execute("UPDATE category_segments SET gone = true WHERE id = %s", (segment,))
+    _bury_segments_below(conn, segment)
+
+
+class SplitTarget(NamedTuple):
+    """A listing too big to read whole: a leaf (segment None) or one of its parts."""
+
+    code: str
+    segment: int | None
+    filters: str
+    facet_ids: list[str]
+    products_count: int
+    popularity: int
+
+
+def splits_due(
+    conn: psycopg.Connection,
+    marketplace: str,
+    *,
+    min_count: int,
+    max_terms: int,
+    limit: int,
+    checked_before: datetime,
+    segment_weight: float,
+) -> list[SplitTarget]:
+    """Leaves and parts bigger than one listing serves, never split or not lately,
+    most popular first. A leaf's popularity is weighted down for its parts: its own
+    sweep already covers its most popular products."""
+    rows = conn.execute(
+        """SELECT code, NULL::bigint, '', ARRAY[]::text[], products_count,
+                  (popularity * %(w)s)::bigint AS popularity
+           FROM categories
+           WHERE marketplace = %(m)s AND is_leaf AND NOT gone AND products_count > %(min)s
+             AND (split_checked_at IS NULL OR split_checked_at < %(before)s)
+           UNION ALL
+           SELECT s.category_code, s.id, s.filters, s.facet_ids, s.products_count, s.popularity
+           FROM category_segments s
+           JOIN categories c ON c.marketplace = s.marketplace AND c.code = s.category_code
+           WHERE s.marketplace = %(m)s AND NOT s.gone AND NOT c.gone AND c.is_leaf
+             AND c.products_count > %(min)s AND s.products_count > %(min)s AND cardinality(s.facet_ids) < %(terms)s
+             AND (s.checked_at IS NULL OR s.checked_at < %(before)s)
+           ORDER BY popularity DESC, products_count DESC
+           LIMIT %(limit)s""",
+        {
+            "m": marketplace,
+            "w": segment_weight,
+            "min": min_count,
+            "terms": max_terms,
+            "before": checked_before,
+            "limit": limit,
+        },
+    ).fetchall()
+    return [SplitTarget(r[0], r[1], r[2], list(r[3]), r[4], r[5]) for r in rows]
+
+
+def record_split(
+    conn: psycopg.Connection,
+    marketplace: str,
+    target: SplitTarget,
+    facet_id: str | None,
+    values: list[FacetValue],
+    total: int,
+    now: datetime,
+) -> None:
+    """Store how a listing splits: one part per value of `facet_id`. With no facet
+    the listing cannot be split usefully, and any parts it had are dropped."""
+    if target.segment is None:
+        conn.execute(
+            """UPDATE categories SET split_checked_at = %s
+               WHERE marketplace = %s AND code = %s""",
+            (now, marketplace, target.code),
+        )
+    else:
+        conn.execute(
+            """UPDATE category_segments SET is_split = %s, checked_at = %s,
+                   products_count = CASE WHEN %s > 0 THEN %s ELSE products_count END
+               WHERE id = %s""",
+            (facet_id is not None, now, total, total, target.segment),
+        )
+    kept = []
+    # Values of a filter like colour overlap and add up past the total: share by
+    # their sum, so the parts together hold the target's popularity, no more.
+    shares = max(sum(v.count for v in values), total, 1)
+    for value in values if facet_id else []:
+        row = conn.execute(
+            """INSERT INTO category_segments (marketplace, category_code, filters, facet_ids,
+                                              parent_id, title, products_count, popularity,
+                                              created_at)
+               VALUES (%(m)s, %(code)s, %(filters)s, %(facets)s, %(parent)s, %(title)s,
+                       %(count)s, %(pop)s, %(now)s)
+               ON CONFLICT (marketplace, category_code, filters) DO UPDATE SET
+                   parent_id = EXCLUDED.parent_id, title = EXCLUDED.title,
+                   products_count = EXCLUDED.products_count,
+                   popularity = EXCLUDED.popularity,
+                   -- Back from gone, its own parts are gone: check it afresh.
+                   is_split = CASE WHEN category_segments.gone THEN NULL
+                                   ELSE category_segments.is_split END,
+                   checked_at = CASE WHEN category_segments.gone THEN NULL
+                                     ELSE category_segments.checked_at END,
+                   gone = false
+               RETURNING id""",
+            {
+                "m": marketplace,
+                "code": target.code,
+                "filters": target.filters + value.term,
+                "facets": [*target.facet_ids, facet_id],
+                "parent": target.segment,
+                "title": value.title,
+                "count": value.count,
+                "pop": round(target.popularity * value.count / shares),
+                "now": now,
+            },
+        ).fetchone()
+        kept.append(row[0])
+    lost = conn.execute(
+        """UPDATE category_segments SET gone = true
+           WHERE marketplace = %s AND category_code = %s AND NOT gone
+             AND parent_id IS NOT DISTINCT FROM %s AND NOT (id = ANY(%s::bigint[]))
+           RETURNING id""",
+        (marketplace, target.code, target.segment, kept),
+    ).fetchall()
+    for (segment,) in lost:
+        _bury_segments_below(conn, segment)
+
+
+def postpone_split(
+    conn: psycopg.Connection,
+    marketplace: str,
+    target: SplitTarget,
+    retry_in: timedelta,
+    every: timedelta,
+    now: datetime,
+) -> None:
+    """After a failed check, try this target again in `retry_in`, not first thing
+    next round, where it would hold every other split up behind it."""
+    checked = now - every + retry_in
+    if target.segment is None:
+        conn.execute(
+            """UPDATE categories SET split_checked_at = %s
+               WHERE marketplace = %s AND code = %s""",
+            (checked, marketplace, target.code),
+        )
+    else:
+        conn.execute(
+            "UPDATE category_segments SET checked_at = %s WHERE id = %s",
+            (checked, target.segment),
+        )
+
+
+def _bury_segments_below(conn: psycopg.Connection, segment: int) -> None:
+    conn.execute(
+        """WITH RECURSIVE below AS (
+               SELECT id FROM category_segments WHERE parent_id = %(s)s
+               UNION
+               SELECT c.id FROM category_segments c JOIN below b ON c.parent_id = b.id
+           )
+           UPDATE category_segments SET gone = true
+           WHERE id IN (SELECT id FROM below) AND NOT gone""",
+        {"s": segment},
     )
 
 

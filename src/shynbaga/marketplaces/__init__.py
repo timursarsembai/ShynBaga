@@ -12,6 +12,10 @@ class Blocked(MarketplaceError):
     """The marketplace refused us; continuing would only make the block worse."""
 
 
+class BadRequest(MarketplaceError):
+    """The marketplace refused the query itself, such as a filter it does not take."""
+
+
 class NotFound(MarketplaceError):
     """The marketplace has no such page: asking again will not help."""
 
@@ -92,6 +96,29 @@ class CategoryCheck:
 
 
 @dataclass(frozen=True)
+class FacetValue:
+    # What to append to a listing query to keep only this value.
+    term: str
+    title: str
+    count: int
+
+
+@dataclass(frozen=True)
+class Facet:
+    """A listing filter, such as brand or price range, with its values' counts."""
+
+    id: str
+    title: str
+    values: list[FacetValue]
+
+
+@dataclass(frozen=True)
+class Facets:
+    total: int
+    facets: list[Facet]
+
+
+@dataclass(frozen=True)
 class OfferList:
     offers: list[Offer] = field(default_factory=list)
     # False when sellers may be missing, so absence must not read as "stopped selling".
@@ -109,7 +136,11 @@ class Marketplace(Protocol):
     # The code of the catalog's top node.
     root_category: str
 
-    def list_products(self, category: str, region: str, page: int) -> list[Product]: ...
+    def list_products(
+        self, category: str, region: str, page: int, filters: str = ""
+    ) -> list[Product]: ...
+
+    def fetch_facets(self, category: str, filters: str, region: str) -> Facets: ...
 
     def fetch_category(self, code: str, region: str) -> CategoryCheck: ...
 

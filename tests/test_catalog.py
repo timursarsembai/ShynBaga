@@ -10,6 +10,9 @@ from shynbaga.marketplaces import (
     CardMetrics,
     Category,
     CategoryCheck,
+    Facet,
+    Facets,
+    FacetValue,
     MarketplaceError,
     Offer,
     OfferList,
@@ -128,6 +131,15 @@ class FakeCatalog:
         self.offers = offers or {}
         self.category_calls = []
         self.listing_calls = []
+        self.facets = {}
+        self.facet_calls = []
+
+    def fetch_facets(self, category, filters, region):
+        self.facet_calls.append(category + filters)
+        found = self.facets.get(category + filters, Facets(0, []))
+        if isinstance(found, Exception):
+            raise found
+        return found
 
     def fetch_category(self, code, region):
         self.category_calls.append(code)
@@ -136,7 +148,7 @@ class FakeCatalog:
             raise found
         return found
 
-    def list_products(self, category, region, page):
+    def list_products(self, category, region, page, filters=""):
         self.listing_calls.append((category, page))
         pages = self.listings.get(category, [])
         found = pages[page] if page < len(pages) else []
@@ -355,8 +367,13 @@ def test_listings_failing_again_and_again_stop_the_round(conn):
 def test_round_stops_sweeping_when_its_time_is_up(conn):
     market = FakeCatalog(TREE, {"Smartphones": [[card("1", 100)]], "Lamps": [[card("9", 50)]]})
     tree_known(conn, market)
-    moments = iter([T0, T0, T0, T0 + timedelta(hours=7)] + [T0 + timedelta(hours=8)] * 50)
-    result = catalog.crawl(conn, [market], settings(tree_checks=0), clock=lambda: next(moments))
+    market.listing_calls.clear()
+
+    def clock():
+        # Time runs out as soon as the first listing has been read.
+        return T0 + timedelta(hours=7) if market.listing_calls else T0
+
+    result = catalog.crawl(conn, [market], settings(tree_checks=0), clock=clock)
     assert result.leaves_swept == 1
 
 
@@ -371,7 +388,7 @@ def test_a_gone_node_takes_its_subtree_with_it(conn):
     catalog.crawl(conn, [market], settings(max_sweeps=0), clock=lambda: later)
     gone = conn.execute("SELECT code FROM categories WHERE gone ORDER BY code").fetchall()
     assert gone == [("Cases",), ("Phones",), ("Smartphones",)]
-    assert db.next_leaf(conn, "fake", later, 3).code == "Lamps"
+    assert db.next_sweep(conn, "fake", later, 3).code == "Lamps"
 
 
 def test_a_section_that_became_a_leaf_drops_its_children(conn):
@@ -455,3 +472,250 @@ def test_a_blocked_round_is_remembered_for_the_pause(conn):
     db.start_run(conn, "fake", catalog.CATALOG, REGION, T0)
     db.close_abandoned_runs(conn, "fake", T0)
     assert db.last_failed_round(conn, "fake", catalog.CATALOG, REGION) == T0
+
+
+# Splitting big listings into parts.
+
+
+def facet(facet_id, **counts):
+    return Facet(
+        facet_id,
+        facet_id,
+        [FacetValue(f":{facet_id}:{name}", name, count) for name, count in counts.items()],
+    )
+
+
+def test_split_takes_the_filter_that_opens_up_the_most_products():
+    facets = Facets(
+        1000,
+        [
+            facet("price", cheap=990, dear=10),  # reach 100 + 10
+            facet("colour", red=400, blue=300, green=300),  # reach 300
+            facet("manufacturerName", nobrand=900, a=50, b=50),  # reach 200
+        ],
+    )
+    facet_id, values = catalog.choose_split(facets, [], listing_cap=100)
+    assert facet_id == "colour"
+    assert [v.term for v in values] == [":colour:red", ":colour:blue", ":colour:green"]
+
+
+def test_split_prefers_brand_when_it_does_about_as_well():
+    facets = Facets(
+        1000, [facet("colour", red=400, blue=300, green=300), facet("manufacturerName", a=500, b=500, c=280)]
+    )
+    assert catalog.choose_split(facets, [], listing_cap=100)[0] == "manufacturerName"
+
+
+def test_split_skips_used_filters_and_useless_ones():
+    facets = Facets(1000, [facet("manufacturerName", a=500, b=500), facet("price", cheap=1000)])
+    assert catalog.choose_split(facets, ["manufacturerName"], listing_cap=100) is None
+
+
+def test_kaspi_filters_answer_is_read_into_facets():
+    from shynbaga.marketplaces.kaspi import parse_facets
+
+    payload = {
+        "data": {
+            "total": 1040192,
+            "filters": [
+                {
+                    "id": "manufacturerName",
+                    "title": "Бренд",
+                    "rows": [
+                        {"id": ":manufacturerName:LorrieX", "title": "LorrieX", "count": 614981},
+                        {"id": ":manufacturerName:Empty", "title": "Empty", "count": 0},
+                    ],
+                },
+                {"id": "broken", "rows": "nope"},
+            ],
+        }
+    }
+    found = parse_facets(payload, "Phone cases")
+    assert found == Facets(
+        1040192,
+        [Facet("manufacturerName", "Бренд", [FacetValue(":manufacturerName:LorrieX", "LorrieX", 614981)])],
+    )
+
+
+BIG_TREE = {
+    "Root": CategoryCheck(Category("Root", "all", 100, 0, False), [Category("Phones", "Phones", 100, 0, None)]),
+    "Phones": CategoryCheck(section("Phones", 100, 900), [leaf("Cases", 100, 800)]),
+}
+
+
+def segments(conn):
+    return conn.execute(
+        """SELECT filters, facet_ids, products_count, popularity, is_split, gone
+           FROM category_segments ORDER BY filters"""
+    ).fetchall()
+
+
+def test_a_big_leaf_is_split_and_a_big_part_split_again(conn):
+    market = FakeCatalog(BIG_TREE, {})
+    market.facets = {
+        "Cases": Facets(100, [facet("manufacturerName", A=60, B=30, C=10)]),
+        "Cases:manufacturerName:A": Facets(
+            60, [facet("manufacturerName", A=60, B=30), facet("price", cheap=34, dear=26)]
+        ),
+    }
+    catalog.crawl(conn, [market], settings(max_sweeps=0), clock=lambda: T0)
+    # Cases is 100 cards, one listing serves 36. Part A (60) splits again by price:
+    # brand is used already.
+    assert segments(conn) == [
+        (":manufacturerName:A", ["manufacturerName"], 60, 120, True, False),
+        (":manufacturerName:A:price:cheap", ["manufacturerName", "price"], 34, 68, None, False),
+        (":manufacturerName:A:price:dear", ["manufacturerName", "price"], 26, 52, None, False),
+        (":manufacturerName:B", ["manufacturerName"], 30, 60, None, False),
+        (":manufacturerName:C", ["manufacturerName"], 10, 20, None, False),
+    ]
+    # Parts no bigger than one listing are not checked: nothing more to gain.
+    assert sorted(market.facet_calls) == ["Cases", "Cases:manufacturerName:A"]
+
+
+def test_parts_are_swept_with_their_filters_and_keep_the_leaf_place(conn):
+    listings = {
+        "Cases": [[card("1", 100), card("2", 200)]],
+        "Cases:manufacturerName:B": [[card("2", 190), card("3", 300)]],
+    }
+
+    class Filtered(FakeCatalog):
+        def list_products(self, category, region, page, filters=""):
+            return super().list_products(category + filters, region, page)
+
+    market = Filtered(BIG_TREE, listings)
+    market.facets = {"Cases": Facets(100, [facet("manufacturerName", A=30, B=30, C=40)])}
+    catalog.crawl(conn, [market], settings(max_sweeps=0), clock=lambda: T0)
+    # Parts wait from when they were made, so give them a day.
+    later = T0 + timedelta(days=1)
+    catalog.crawl(conn, [market], settings(max_sweeps=4), clock=lambda: later)
+    swept = {code for code, page in market.listing_calls}
+    assert {"Cases", "Cases:manufacturerName:B"} <= swept
+    rows = conn.execute(
+        "SELECT external_id, position, card_price FROM products ORDER BY external_id"
+    ).fetchall()
+    # Product 2 keeps its place in the whole leaf; product 3 was only in a part.
+    assert rows == [("1", 1, Decimal(100)), ("2", 2, Decimal(190)), ("3", None, Decimal(300))]
+
+
+def test_parts_that_vanish_go_with_their_own_parts(conn):
+    market = FakeCatalog(BIG_TREE, {})
+    market.facets = {
+        "Cases": Facets(100, [facet("manufacturerName", A=60, B=40)]),
+        "Cases:manufacturerName:A": Facets(60, [facet("price", cheap=40, dear=20)]),
+        "Cases:manufacturerName:B": Facets(40, []),
+    }
+    catalog.crawl(conn, [market], settings(max_sweeps=0), clock=lambda: T0)
+    later = T0 + catalog.TREE_EVERY + timedelta(hours=1)
+    market.facets = {"Cases": Facets(100, [facet("manufacturerName", B=40, D=60)])}
+    catalog.crawl(conn, [market], settings(max_sweeps=0), clock=lambda: later)
+    gone = [row[0] for row in segments(conn) if row[5]]
+    assert gone == [
+        ":manufacturerName:A",
+        ":manufacturerName:A:price:cheap",
+        ":manufacturerName:A:price:dear",
+    ]
+
+
+
+def split_tree(conn, market, at=T0):
+    catalog.crawl(conn, [market], settings(max_sweeps=0), clock=lambda: at)
+
+
+TWO_BIG = {
+    "Root": CategoryCheck(Category("Root", "all", 200, 0, False), [Category("Phones", "Phones", 200, 0, None)]),
+    "Phones": CategoryCheck(section("Phones", 200, 900), [leaf("Cases", 100, 800), leaf("Bags", 100, 700)]),
+}
+
+
+def test_a_failed_filters_check_waits_and_lets_the_others_go(conn):
+    market = FakeCatalog(TWO_BIG, {})
+    market.facets = {
+        "Cases": MarketplaceError("HTTP 500"),
+        "Bags": Facets(100, [facet("manufacturerName", A=50, B=50)]),
+    }
+    split_tree(conn, market)
+    split_tree(conn, market, T0 + timedelta(hours=1))
+    # Bags got split although Cases, more popular, failed first.
+    assert [row[0] for row in segments(conn)] == [":manufacturerName:A", ":manufacturerName:B"]
+    assert market.facet_calls.count("Cases") == 1  # not again within SPLIT_RETRY
+    split_tree(conn, market, T0 + catalog.SPLIT_RETRY + timedelta(minutes=1))
+    assert market.facet_calls.count("Cases") == 2
+
+
+def test_parts_of_a_leaf_now_small_enough_are_not_swept(conn):
+    market = FakeCatalog(BIG_TREE, {})
+    market.facets = {"Cases": Facets(100, [facet("manufacturerName", A=50, B=50)])}
+    split_tree(conn, market)
+    db.mark_swept(conn, "fake", "Cases", 36, T0 + timedelta(hours=23))
+    assert db.next_sweep(conn, "fake", T0 + timedelta(days=1), 3).segment is not None
+    conn.execute("UPDATE categories SET products_count = 30 WHERE code = 'Cases'")
+    item = db.next_sweep(conn, "fake", T0 + timedelta(days=1), 3)
+    assert item.code == "Cases" and item.segment is None
+
+
+def test_new_parts_do_not_jump_ahead_of_a_popular_leaf(conn):
+    market = FakeCatalog(TWO_BIG, {})
+    market.facets = {"Cases": Facets(100, [facet("manufacturerName", A=50, B=50)])}
+    split_tree(conn, market)
+    # Bags was swept a while ago; the parts were made just now.
+    db.mark_swept(conn, "fake", "Cases", 36, T0)
+    db.mark_swept(conn, "fake", "Bags", 36, T0 - timedelta(hours=12))
+    conn.commit()
+    item = db.next_sweep(conn, "fake", T0 + timedelta(minutes=5), 3)
+    assert (item.code, item.segment) == ("Bags", None)
+
+
+def test_a_part_back_from_gone_is_checked_afresh(conn):
+    market = FakeCatalog(BIG_TREE, {})
+    market.facets = {
+        "Cases": Facets(100, [facet("manufacturerName", A=60, B=40)]),
+        "Cases:manufacturerName:A": Facets(60, [facet("price", cheap=30, dear=30)]),
+    }
+    split_tree(conn, market)
+    t1 = T0 + catalog.TREE_EVERY + timedelta(hours=1)
+    market.facets["Cases"] = Facets(100, [facet("manufacturerName", B=100)])
+    split_tree(conn, market, t1)
+    t2 = t1 + catalog.TREE_EVERY + timedelta(hours=1)
+    market.facets["Cases"] = Facets(100, [facet("manufacturerName", A=60, B=40)])
+    calls = len(market.facet_calls)
+    split_tree(conn, market, t2)
+    assert "Cases:manufacturerName:A" in market.facet_calls[calls:]
+    part = [r for r in segments(conn) if r[0] == ":manufacturerName:A"][0]
+    assert part[4:] == (True, False)  # split again, not gone
+
+
+def test_a_part_kaspi_refuses_is_dropped_without_failing_the_round(conn):
+    from shynbaga.marketplaces import BadRequest
+
+    class Filtered(FakeCatalog):
+        def list_products(self, category, region, page, filters=""):
+            return super().list_products(category + filters, region, page)
+
+    bad = BadRequest("HTTP 400")
+    listings = {
+        "Cases": [[card("1", 100)]],
+        "Cases:manufacturerName:A": [bad],
+        "Cases:manufacturerName:B": [bad],
+        "Cases:manufacturerName:C": [bad],
+    }
+    market = Filtered(BIG_TREE, listings)
+    market.facets = {"Cases": Facets(100, [facet("manufacturerName", A=40, B=30, C=30)])}
+    split_tree(conn, market)
+    later = T0 + timedelta(days=1)
+    result = catalog.crawl(conn, [market], settings(max_sweeps=10), clock=lambda: later)
+    assert result.status == "completed"
+    assert all(row[5] for row in segments(conn))
+
+
+def test_overlapping_values_share_no_more_than_the_whole():
+    market_values = [FacetValue(":colour:red", "red", 80), FacetValue(":colour:blue", "blue", 70)]
+    reach = catalog.choose_split(Facets(100, [Facet("colour", "colour", market_values)]), [], 40)
+    assert reach is not None  # 80 of reach, capped by the total 100: worth a split
+
+
+def test_overlapping_parts_split_the_popularity(conn):
+    market = FakeCatalog(BIG_TREE, {})
+    market.facets = {"Cases": Facets(100, [facet("colour", red=80, blue=70, green=50)])}
+    split_tree(conn, market)
+    total = conn.execute("SELECT sum(popularity) FROM category_segments").fetchone()[0]
+    assert total == 200  # a quarter of 800, not more

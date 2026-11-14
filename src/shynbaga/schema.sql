@@ -200,6 +200,46 @@ BEGIN
 END $$;
 CREATE INDEX IF NOT EXISTS products_score ON products (score DESC NULLS LAST, id);
 
+-- Parts of a leaf too big to list whole (Kaspi serves ~3600 cards per listing).
+-- A part is the leaf's listing with filter terms appended, such as a brand and a
+-- price range; a part still too big is split again. Popularity is an estimate: the
+-- parent's share by product count. Only unsplit parts are swept.
+CREATE TABLE IF NOT EXISTS category_segments (
+    id             bigserial PRIMARY KEY,
+    marketplace    text NOT NULL,
+    category_code  text NOT NULL,
+    filters        text NOT NULL,
+    -- Filter ids used in `filters`: a split never uses one twice.
+    facet_ids      text[] NOT NULL,
+    parent_id      bigint REFERENCES category_segments (id),
+    title          text NOT NULL,
+    products_count integer NOT NULL,
+    popularity     bigint NOT NULL,
+    -- Null until checked; true when split into parts, false when it cannot be.
+    is_split       boolean,
+    checked_at     timestamptz,
+    gone           boolean NOT NULL DEFAULT false,
+    swept_at       timestamptz,
+    swept_products integer,
+    UNIQUE (marketplace, category_code, filters)
+);
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS split_checked_at timestamptz;
+-- A part waits for its first sweep from when it was made, not from "30 days ago":
+-- a split makes up to 255 parts at once, which would otherwise jump the queue.
+ALTER TABLE category_segments ADD COLUMN IF NOT EXISTS created_at timestamptz;
+CREATE INDEX IF NOT EXISTS category_segments_parent ON category_segments (parent_id);
+-- When `position` was set: cards from parts carry no place in the whole leaf.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT FROM information_schema.columns
+        WHERE table_name = 'products' AND column_name = 'ranked_at'
+    ) THEN
+        ALTER TABLE products ADD COLUMN ranked_at timestamptz;
+        UPDATE products SET ranked_at = card_seen_at WHERE position IS NOT NULL;
+    END IF;
+END $$;
+
 -- The admin site reads through its own role, created once by hand with a password.
 DO $$
 BEGIN

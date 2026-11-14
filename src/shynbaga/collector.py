@@ -71,6 +71,7 @@ def discover(
     region: str,
     max_products: int,
     max_pages: int | None = None,
+    filters: str = "",
 ) -> tuple[list[Product], str | None]:
     """Products found, plus why the listing stopped early, if it did.
 
@@ -94,7 +95,7 @@ def discover(
                 ):
                     return
             try:
-                cards = market.list_products(category, region, page)
+                cards = market.list_products(category, region, page, filters)
             except MarketplaceError as failure:
                 with lock:
                     failures.append((page, failure))

@@ -17,10 +17,14 @@ import httpx
 from datetime import datetime
 
 from shynbaga.marketplaces import (
+    BadRequest,
     Blocked,
     CardMetrics,
     Category,
     CategoryCheck,
+    Facet,
+    Facets,
+    FacetValue,
     MarketplaceError,
     NotFound,
     Offer,
@@ -53,8 +57,6 @@ class _Transient(MarketplaceError):
     """The connection or the server failed, not Kaspi's judgement of us, so a retry may work."""
 
 
-class _BadRequest(MarketplaceError):
-    """HTTP 400: Kaspi answers this past the deepest listing page."""
 
 _LEADING_DIGITS = re.compile(r"^\d+")
 _PRODUCT_PATH = re.compile(r"^/shop/(?:[^/]+/)?p/(?:[^/]*-)?(\d+)[a-z]*/?$", re.IGNORECASE)
@@ -254,6 +256,33 @@ def parse_category(payload: Any, code: str) -> CategoryCheck:
     )
 
 
+def parse_facets(payload: Any, query: str) -> Facets:
+    """The filters a /pl/filters answer offers for a listing, with value counts.
+
+    A filter's counts ignore that filter's own selection, so a filter already in the
+    query lists values beyond it; callers skip those. Only the largest 255 values of
+    a filter are listed.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    raw = data.get("filters") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        raise MarketplaceError(f"filters for {query} are missing")
+    facets = []
+    for item in raw:
+        if not isinstance(item, dict) or not _text(item.get("id")):
+            continue
+        values = []
+        for row in item.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            term, count = _text(row.get("id")), _whole(row.get("count"))
+            if term and term.startswith(":") and count:
+                values.append(FacetValue(term, _text(row.get("title")) or term, count))
+        if values:
+            facets.append(Facet(item["id"], _text(item.get("title")) or item["id"], values))
+    return Facets(_whole(data.get("total")) or 0, facets)
+
+
 def _find_node(items: list, code: str) -> dict | None:
     for item in items:
         if not isinstance(item, dict):
@@ -351,9 +380,11 @@ def _category_referer(category: str, region: str) -> str:
     return f"{BASE_URL}/shop/c/{quote(category.lower())}/?c={region}"
 
 
-def _listing_params(category: str, region: str, page: int) -> dict[str, Any]:
+def _listing_params(category: str, region: str, page: int, filters: str = "") -> dict[str, Any]:
+    # Filters are terms like ":manufacturerName:Apple:price:до 10 000 т" (2026-11-14:
+    # terms combine; a price range outside Kaspi's fixed buckets is silently ignored).
     return {
-        "q": f":category:{category}",
+        "q": f":category:{category}{filters}",
         "page": page,
         "c": region,
         "ui": "d",
@@ -405,7 +436,9 @@ class Kaspi:
         proxy = self._proxies[self._proxy_index] if self._proxies and not self._transport else None
         return httpx.Client(proxy=proxy, transport=self._transport, **self._client_options)
 
-    def list_products(self, category: str, region: str, page: int) -> list[Product]:
+    def list_products(
+        self, category: str, region: str, page: int, filters: str = ""
+    ) -> list[Product]:
         try:
             payload = self._request(
                 "GET",
@@ -413,9 +446,9 @@ class Kaspi:
                 "/yml/product-view/pl/results",
                 region,
                 referer=_category_referer(category, region),
-                params=_listing_params(category, region, page),
+                params=_listing_params(category, region, page, filters),
             )
-        except _BadRequest:
+        except BadRequest:
             if page == 0:
                 raise
             return []  # past the deepest page Kaspi serves
@@ -431,6 +464,16 @@ class Kaspi:
             params=_listing_params(code, region, 0),
         )
         return parse_category(payload, code)
+
+    def fetch_facets(self, category: str, filters: str, region: str) -> Facets:
+        payload = self._request(
+            "GET",
+            "/yml/product-view/pl/filters",
+            region,
+            referer=_category_referer(category, region),
+            params=_listing_params(category, region, 0, filters),
+        )
+        return parse_facets(payload, f"{category}{filters}")
 
     def fetch_product(self, external_id: str, region: str) -> Product:
         payload = self._request(
@@ -543,7 +586,8 @@ class Kaspi:
         if response.status_code == 404:
             raise NotFound(f"HTTP 404 on {path}")
         if response.status_code == 400:
-            raise _BadRequest(f"HTTP 400 on {path}")
+            # Kaspi answers this past the deepest listing page, too.
+            raise BadRequest(f"HTTP 400 on {path}")
         if response.status_code != 200:
             raise MarketplaceError(f"HTTP {response.status_code} on {path}")
         if accept and "json" not in accept:

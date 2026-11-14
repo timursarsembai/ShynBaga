@@ -26,7 +26,7 @@ class FakeMarket:
         self.offers = offers
         self.pages = pages if pages is not None else [[product(k) for k in offers]]
 
-    def list_products(self, category, region, page):
+    def list_products(self, category, region, page, filters=""):
         item = self.pages[page] if page < len(self.pages) else []
         if isinstance(item, Exception):
             raise item
@@ -162,7 +162,7 @@ def test_listing_is_split_between_workers_and_kept_in_page_order():
     asked = {}
 
     class Pages(FakeMarket):
-        def list_products(self, category, region, page):
+        def list_products(self, category, region, page, filters=""):
             asked.setdefault(self.name, []).append(page)
             return super().list_products(category, region, page)
 
@@ -258,7 +258,7 @@ def test_discovery_stops_when_the_server_repeats_a_page():
     calls = []
 
     class Repeating(FakeMarket):
-        def list_products(self, category, region, page):
+        def list_products(self, category, region, page, filters=""):
             calls.append(page)
             return [product("1")]
 
@@ -268,7 +268,7 @@ def test_discovery_stops_when_the_server_repeats_a_page():
 
 def test_interrupted_run_is_recorded_as_failed(conn):
     class Interrupted(FakeMarket):
-        def list_products(self, category, region, page):
+        def list_products(self, category, region, page, filters=""):
             raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):

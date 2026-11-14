@@ -137,7 +137,7 @@ class Marketplace(Protocol):
     root_category: str
 
     def list_products(
-        self, category: str, region: str, page: int, filters: str = ""
+        self, category: str, region: str, page: int, filters: str = "", sort: str = "relevance"
     ) -> list[Product]: ...
 
     def fetch_facets(self, category: str, filters: str, region: str) -> Facets: ...

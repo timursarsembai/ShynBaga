@@ -148,7 +148,7 @@ class FakeCatalog:
             raise found
         return found
 
-    def list_products(self, category, region, page, filters=""):
+    def list_products(self, category, region, page, filters="", sort="relevance"):
         self.listing_calls.append((category, page))
         pages = self.listings.get(category, [])
         found = pages[page] if page < len(pages) else []
@@ -546,7 +546,7 @@ BIG_TREE = {
 def segments(conn):
     return conn.execute(
         """SELECT filters, facet_ids, products_count, popularity, is_split, gone
-           FROM category_segments ORDER BY filters"""
+           FROM category_segments WHERE sort = 'relevance' ORDER BY filters"""
     ).fetchall()
 
 
@@ -579,7 +579,7 @@ def test_parts_are_swept_with_their_filters_and_keep_the_leaf_place(conn):
     }
 
     class Filtered(FakeCatalog):
-        def list_products(self, category, region, page, filters=""):
+        def list_products(self, category, region, page, filters="", sort="relevance"):
             return super().list_products(category + filters, region, page)
 
     market = Filtered(BIG_TREE, listings)
@@ -688,7 +688,7 @@ def test_a_part_kaspi_refuses_is_dropped_without_failing_the_round(conn):
     from shynbaga.marketplaces import BadRequest
 
     class Filtered(FakeCatalog):
-        def list_products(self, category, region, page, filters=""):
+        def list_products(self, category, region, page, filters="", sort="relevance"):
             return super().list_products(category + filters, region, page)
 
     bad = BadRequest("HTTP 400")
@@ -717,5 +717,105 @@ def test_overlapping_parts_split_the_popularity(conn):
     market = FakeCatalog(BIG_TREE, {})
     market.facets = {"Cases": Facets(100, [facet("colour", red=80, blue=70, green=50)])}
     split_tree(conn, market)
-    total = conn.execute("SELECT sum(popularity) FROM category_segments").fetchone()[0]
+    total = conn.execute(
+        "SELECT sum(popularity) FROM category_segments WHERE parent_id IS NULL AND sort = 'relevance'"
+    ).fetchone()[0]
     assert total == 200  # a quarter of 800, not more
+
+
+# Other orders for listings filters will not split further.
+
+
+class Sorted(FakeCatalog):
+    """Listings keyed by category, filters and, for other orders, the sort."""
+
+    def list_products(self, category, region, page, filters="", sort="relevance"):
+        key = category + filters + ("" if sort == "relevance" else f"@{sort}")
+        return super().list_products(key, region, page)
+
+
+def variants(conn):
+    return conn.execute(
+        """SELECT filters, sort, products_count, popularity, gone FROM category_segments
+           WHERE sort <> 'relevance' ORDER BY filters, sort"""
+    ).fetchall()
+
+
+def test_a_big_leaf_no_filter_splits_is_read_in_other_orders(conn):
+    market = Sorted(BIG_TREE, {"Cases@price-asc": [[card("7", 5)]], "Cases": [[card("1", 100)]]})
+    market.facets = {"Cases": Facets(100, [facet("price", cheap=100)])}  # no use
+    split_tree(conn, market)
+    assert variants(conn) == [
+        ("", "created-desc", 100, 50, False),
+        ("", "price-asc", 100, 50, False),
+        ("", "price-desc", 100, 50, False),
+    ]
+    later = T0 + timedelta(days=1)
+    catalog.crawl(conn, [market], settings(max_sweeps=10), clock=lambda: later)
+    swept = {code for code, _ in market.listing_calls}
+    assert {"Cases", "Cases@price-asc", "Cases@price-desc", "Cases@created-desc"} <= swept
+    # The cheap end of the listing, beyond what relevance served: no place in the leaf.
+    assert conn.execute(
+        "SELECT position, card_price FROM products WHERE external_id = '7'"
+    ).fetchone() == (None, Decimal(5))
+
+
+def test_only_parts_filters_will_not_split_get_other_orders(conn):
+    market = Sorted(BIG_TREE, {})
+    market.facets = {
+        "Cases": Facets(100, [facet("manufacturerName", A=70, B=30)]),
+        "Cases:manufacturerName:A": Facets(70, [facet("price", cheap=70)]),  # cannot split
+    }
+    split_tree(conn, market)
+    found = {(f, s) for f, s, *_ in variants(conn)}
+    assert found == {(":manufacturerName:A", s) for s, _ in db.OTHER_SORTS}
+    # A leaf that splits gets no orders of its own, nor a part one order covers.
+    assert not any(f in ("", ":manufacturerName:B") for f, _ in found)
+
+
+def test_orders_go_when_their_listing_splits_after_all(conn):
+    market = Sorted(BIG_TREE, {})
+    market.facets = {"Cases": Facets(100, [facet("price", cheap=100)])}
+    split_tree(conn, market)
+    assert len(variants(conn)) == 3
+    later = T0 + catalog.TREE_EVERY + timedelta(hours=1)
+    market.facets = {"Cases": Facets(100, [facet("manufacturerName", A=50, B=50)])}
+    split_tree(conn, market, later)
+    # The whole leaf's orders are gone; the new parts, which no filter splits, have theirs.
+    assert all(row[4] for row in variants(conn) if row[0] == "")
+    assert {row[0] for row in variants(conn) if not row[4]} == {
+        ":manufacturerName:A",
+        ":manufacturerName:B",
+    }
+
+
+def test_orders_are_not_read_once_the_listing_fits_one_order(conn):
+    market = Sorted(BIG_TREE, {})
+    market.facets = {"Cases": Facets(100, [facet("price", cheap=100)])}
+    split_tree(conn, market)
+    conn.execute("UPDATE category_segments SET products_count = 30 WHERE sort <> 'relevance'")
+    db.mark_swept(conn, "fake", "Cases", 36, T0)
+    item = db.next_sweep(conn, "fake", T0 + timedelta(days=3), 3)
+    assert item.sort == "relevance"
+
+
+def test_orders_of_a_part_that_shrank_are_not_read(conn):
+    market = Sorted(BIG_TREE, {})
+    market.facets = {
+        "Cases": Facets(100, [facet("manufacturerName", A=70, B=30)]),
+        "Cases:manufacturerName:A": Facets(70, [facet("price", cheap=70)]),
+    }
+    split_tree(conn, market)
+    conn.execute(
+        """UPDATE category_segments SET products_count = 20
+           WHERE filters = ':manufacturerName:A' AND sort = 'relevance'"""
+    )
+    for code in ("Cases",):
+        db.mark_swept(conn, "fake", code, 36, T0 + timedelta(days=3))
+    picked = set()
+    for hours in range(0, 72, 6):
+        item = db.next_sweep(conn, "fake", T0 + timedelta(days=3, hours=hours), 3)
+        picked.add(item.sort)
+        if item.segment:
+            db.mark_segment_swept(conn, item.segment, 0, T0 + timedelta(days=3, hours=hours))
+    assert picked == {"relevance"}

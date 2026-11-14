@@ -9,9 +9,9 @@
   <span>Обойдено хотя бы раз <b>{{ totals.swept | num }}</b></span>
   <span>Товаров в конечных (по Каспи) <b>{{ totals.leaf_products | num }}</b></span>
   <span>Карточек в последних обходах <b>{{ totals.swept_products | num }}</b></span>
-  <span>Частей больших категорий <b>{{ totals.parts | num }}</b> (обойдено {{ totals.parts_swept | num }}, карточек {{ totals.parts_products | num }})</span>
+  <span>Частей больших категорий <b>{{ totals.parts | num }}</b>, других сортировок <b>{{ totals.orders | num }}</b> (обойдено {{ totals.parts_swept | num }}, карточек {{ totals.parts_products | num }})</span>
 </div>
-<p class="muted">Очередь обхода: популярность по данным Каспи × время с прошлого обхода ÷ число страниц. Каспи отдаёт не больше 300 страниц (около 3600 товаров) на один список, поэтому большие категории делятся на части фильтрами (бренд, цена или другой, который открывает больше товаров), до трёх фильтров подряд. Части стоят в той же очереди с четвертью популярности категории.</p>
+<p class="muted">Очередь обхода: популярность по данным Каспи × время с прошлого обхода ÷ число страниц. Каспи отдаёт не больше 300 страниц (около 3600 товаров) на один список, поэтому большие категории делятся на части фильтрами (бренд, цена или другой, который открывает больше товаров), до трёх фильтров подряд. Части стоят в той же очереди с четвертью популярности категории. Список, который и после деления больше 3600 карточек, читается ещё в трёх сортировках (цена ↑, цена ↓, новинки), каждая с четвертью его популярности.</p>
 <form class="filters" method="get" action="/categories">
   <label>Поиск<input name="q" value="{{ f.q }}" size="30"></label>
   <label>Показать<select name="only">
@@ -28,7 +28,7 @@
   <button>Найти</button> <a href="/categories">сбросить</a>
 </form>
 <table>
-<tr><th>Категория</th><th>Родитель</th><th class="n">Уровень</th><th class="n">Товаров (Каспи)</th><th class="n">Популярность</th><th>Тип</th><th>Проверена</th><th>Обойдена</th><th class="n">Карточек</th><th class="n">Частей (обойдено)</th><th class="n">Карточек в частях</th></tr>
+<tr><th>Категория</th><th>Родитель</th><th class="n">Уровень</th><th class="n">Товаров (Каспи)</th><th class="n">Популярность</th><th>Тип</th><th>Проверена</th><th>Обойдена</th><th class="n">Карточек</th><th class="n">Частей + сортировок (обойдено)</th><th class="n">Карточек в частях</th></tr>
 {% for c in rows %}
 <tr>
   <td>{% if c.is_leaf %}<a href="/?category={{ c.code | urlencode }}">{{ c.title }}</a>{% else %}{{ c.title }}{% endif %}<br><span class="muted">{{ c.code }}</span></td>
@@ -40,7 +40,7 @@
   <td class="nw">{{ c.checked_at | when }}</td>
   <td class="nw">{{ c.swept_at | when }}</td>
   <td class="n">{{ c.swept_products | num }}</td>
-  <td class="n">{% if c.parts %}{{ c.parts | num }} ({{ c.parts_swept | num }}){% else %}—{% endif %}</td>
+  <td class="n">{% if c.parts or c.orders %}{{ c.parts | num }}{% if c.orders %} + {{ c.orders | num }}{% endif %} ({{ c.parts_swept | num }}){% else %}—{% endif %}</td>
   <td class="n">{{ c.parts_products | num }}</td>
 </tr>
 {% else %}<tr><td colspan="11" class="muted">Категорий пока нет</td></tr>{% endfor %}

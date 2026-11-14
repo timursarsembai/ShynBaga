@@ -380,15 +380,19 @@ def _category_referer(category: str, region: str) -> str:
     return f"{BASE_URL}/shop/c/{quote(category.lower())}/?c={region}"
 
 
-def _listing_params(category: str, region: str, page: int, filters: str = "") -> dict[str, Any]:
+def _listing_params(
+    category: str, region: str, page: int, filters: str = "", sort: str = "relevance"
+) -> dict[str, Any]:
     # Filters are terms like ":manufacturerName:Apple:price:до 10 000 т" (2026-11-14:
     # terms combine; a price range outside Kaspi's fixed buckets is silently ignored).
+    # Sorts: relevance, price-asc, price-desc, created-desc, rating; each serves its
+    # own first ~300 pages.
     return {
         "q": f":category:{category}{filters}",
         "page": page,
         "c": region,
         "ui": "d",
-        "sort": "relevance",
+        "sort": sort,
         "i": -1,
     }
 
@@ -437,7 +441,7 @@ class Kaspi:
         return httpx.Client(proxy=proxy, transport=self._transport, **self._client_options)
 
     def list_products(
-        self, category: str, region: str, page: int, filters: str = ""
+        self, category: str, region: str, page: int, filters: str = "", sort: str = "relevance"
     ) -> list[Product]:
         try:
             payload = self._request(
@@ -446,7 +450,7 @@ class Kaspi:
                 "/yml/product-view/pl/results",
                 region,
                 referer=_category_referer(category, region),
-                params=_listing_params(category, region, page, filters),
+                params=_listing_params(category, region, page, filters, sort),
             )
         except BadRequest:
             if page == 0:

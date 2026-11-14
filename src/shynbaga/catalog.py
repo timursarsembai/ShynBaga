@@ -53,6 +53,9 @@ MAX_FILTER_TERMS = 3
 # A leaf's parts share this much of its popularity: the leaf's own sweep already
 # covers its most popular products, so the parts hold its quieter tail.
 SEGMENT_WEIGHT = 0.25
+# Each other order of a listing too big to read whole gets this share of its
+# popularity: it reads further down the same listing.
+SORT_WEIGHT = 0.25
 # Filters to prefer when several open up about as many products.
 PREFERRED_FACETS = ("manufacturerName", "price")
 # A failed filters check is tried again after this long.
@@ -101,6 +104,16 @@ def crawl(
         db.ensure_root(conn, key, settings.root)
         _check_tree(conn, markets, settings, clock, result)
         _split_big_listings(conn, markets, settings, clock, result)
+        db.ensure_sort_variants(
+            conn,
+            key,
+            min_count=markets[0].max_listing_pages * CARDS_PER_PAGE,
+            max_terms=MAX_FILTER_TERMS,
+            segment_weight=SEGMENT_WEIGHT,
+            sort_weight=SORT_WEIGHT,
+            now=clock(),
+        )
+        conn.commit()
         _fetch_tracked_offers(conn, markets, settings, clock, result, run_id)
         _sweep(conn, markets, settings, started + settings.round_length, clock, result)
         collector._refresh_seller_profiles(conn, markets, clock)
@@ -308,11 +321,17 @@ def _sweep(
         if item is None or (item.code, item.segment) in swept:
             return
         swept.add((item.code, item.segment))
-        where = item.code + item.filters
+        where = item.code + item.filters + ("" if item.sort == "relevance" else f" ({item.sort})")
         pages = min(max(math.ceil(item.products_count / CARDS_PER_PAGE), 1), cap)
         try:
             cards, error = collector.discover(
-                markets, item.code, settings.region, pages * CARDS_PER_PAGE, pages, item.filters
+                markets,
+                item.code,
+                settings.region,
+                pages * CARDS_PER_PAGE,
+                pages,
+                item.filters,
+                item.sort,
             )
         except Blocked:
             raise

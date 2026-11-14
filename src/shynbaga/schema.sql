@@ -228,6 +228,22 @@ ALTER TABLE categories ADD COLUMN IF NOT EXISTS split_checked_at timestamptz;
 -- a split makes up to 255 parts at once, which would otherwise jump the queue.
 ALTER TABLE category_segments ADD COLUMN IF NOT EXISTS created_at timestamptz;
 CREATE INDEX IF NOT EXISTS category_segments_parent ON category_segments (parent_id);
+-- A listing still too big after splitting is also read in other orders: each order
+-- serves its own first ~3600 cards. Such a variant is a row with the same filters
+-- and another sort, a child of the part it reorders (none for a whole leaf).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT FROM information_schema.columns
+        WHERE table_name = 'category_segments' AND column_name = 'sort'
+    ) THEN
+        ALTER TABLE category_segments ADD COLUMN sort text NOT NULL DEFAULT 'relevance';
+        ALTER TABLE category_segments
+            DROP CONSTRAINT IF EXISTS category_segments_marketplace_category_code_filters_key;
+        ALTER TABLE category_segments ADD CONSTRAINT category_segments_listing
+            UNIQUE (marketplace, category_code, filters, sort);
+    END IF;
+END $$;
 -- When `position` was set: cards from parts carry no place in the whole leaf.
 DO $$
 BEGIN

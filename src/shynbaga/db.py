@@ -653,6 +653,7 @@ class Sweep(NamedTuple):
     products_count: int
     segment: int | None = None
     filters: str = ""
+    sort: str = "relevance"
 
 
 # A listing never swept counts as last swept this long ago.
@@ -670,22 +671,27 @@ def next_sweep(
     row = conn.execute(
         """WITH queue AS (
                SELECT code, products_count, NULL::bigint AS segment, '' AS filters,
-                      popularity + %(floor)s AS weight,
+                      'relevance' AS sort, popularity + %(floor)s AS weight,
                       coalesce(swept_at, %(now)s - %(never)s) AS due_since
                FROM categories
                WHERE marketplace = %(m)s AND is_leaf AND NOT gone AND products_count > 0
                UNION ALL
                -- Parts get no floor (there can be tens of thousands) and wait from
                -- when they were made. Only parts of leaves still too big to list whole.
-               SELECT s.category_code, s.products_count, s.id, s.filters, s.popularity,
-                      coalesce(s.swept_at, s.created_at, %(now)s)
+               SELECT s.category_code, s.products_count, s.id, s.filters, s.sort,
+                      s.popularity, coalesce(s.swept_at, s.created_at, %(now)s)
                FROM category_segments s
                JOIN categories c ON c.marketplace = s.marketplace AND c.code = s.category_code
                WHERE s.marketplace = %(m)s AND NOT s.gone AND s.is_split IS NOT TRUE
                  AND NOT c.gone AND c.is_leaf AND c.products_count > %(cards)s
                  AND s.products_count > 0
+                 -- Another order is worth reading only past what one order serves,
+                 -- going by the listing it reorders (a leaf's is checked above).
+                 AND (s.sort = 'relevance' OR s.parent_id IS NULL
+                      OR (SELECT b.products_count FROM category_segments b
+                          WHERE b.id = s.parent_id AND NOT b.gone) > %(cards)s)
            )
-           SELECT code, products_count, segment, filters FROM queue
+           SELECT code, products_count, segment, filters, sort FROM queue
            ORDER BY weight::float8 * extract(epoch FROM %(now)s - due_since)
                     / least(greatest(ceil(products_count / 12.0), 1), %(pages)s) DESC,
                     code, segment NULLS FIRST
@@ -772,6 +778,7 @@ def splits_due(
            FROM category_segments s
            JOIN categories c ON c.marketplace = s.marketplace AND c.code = s.category_code
            WHERE s.marketplace = %(m)s AND NOT s.gone AND NOT c.gone AND c.is_leaf
+             AND s.sort = 'relevance'
              AND c.products_count > %(min)s AND s.products_count > %(min)s AND cardinality(s.facet_ids) < %(terms)s
              AND (s.checked_at IS NULL OR s.checked_at < %(before)s)
            ORDER BY popularity DESC, products_count DESC
@@ -823,7 +830,7 @@ def record_split(
                                               created_at)
                VALUES (%(m)s, %(code)s, %(filters)s, %(facets)s, %(parent)s, %(title)s,
                        %(count)s, %(pop)s, %(now)s)
-               ON CONFLICT (marketplace, category_code, filters) DO UPDATE SET
+               ON CONFLICT (marketplace, category_code, filters, sort) DO UPDATE SET
                    parent_id = EXCLUDED.parent_id, title = EXCLUDED.title,
                    products_count = EXCLUDED.products_count,
                    popularity = EXCLUDED.popularity,
@@ -856,6 +863,73 @@ def record_split(
     ).fetchall()
     for (segment,) in lost:
         _bury_segments_below(conn, segment)
+
+
+# Orders besides relevance, for listings still too big after splitting. Rating is
+# left out: its first pages mostly repeat relevance's (2026-11-14).
+OTHER_SORTS = (("price-asc", "цена ↑"), ("price-desc", "цена ↓"), ("created-desc", "новинки"))
+
+
+def ensure_sort_variants(
+    conn: psycopg.Connection,
+    marketplace: str,
+    *,
+    min_count: int,
+    max_terms: int,
+    segment_weight: float,
+    sort_weight: float,
+    now: datetime,
+) -> int:
+    """Add other orders for each listing too big to read whole that filters will not
+    split further: a leaf checked and left whole, or a part no filter splits or that
+    has the most filters a part may have. No request needed. Returns rows added or
+    brought back."""
+    sorts, labels = zip(*OTHER_SORTS)
+    return conn.execute(
+        """INSERT INTO category_segments AS s
+               (marketplace, category_code, filters, facet_ids, parent_id, title,
+                products_count, popularity, is_split, created_at, sort)
+           SELECT b.marketplace, b.code, b.filters, b.facet_ids, b.segment,
+                  b.title || ' · ' || v.label, b.products_count,
+                  (b.popularity * %(sw)s)::bigint, false, %(now)s, v.sort
+           FROM (
+               SELECT c.marketplace, c.code, '' AS filters, ARRAY[]::text[] AS facet_ids,
+                      NULL::bigint AS segment, c.title, c.products_count,
+                      c.popularity * %(w)s AS popularity
+               FROM categories c
+               WHERE c.marketplace = %(m)s AND c.is_leaf AND NOT c.gone
+                 AND c.products_count > %(min)s AND c.split_checked_at IS NOT NULL
+                 AND NOT EXISTS (
+                     SELECT FROM category_segments p
+                     WHERE p.marketplace = c.marketplace AND p.category_code = c.code
+                       AND p.parent_id IS NULL AND p.sort = 'relevance' AND NOT p.gone)
+               UNION ALL
+               SELECT p.marketplace, p.category_code, p.filters, p.facet_ids, p.id, p.title,
+                      p.products_count, p.popularity
+               FROM category_segments p
+               JOIN categories c ON c.marketplace = p.marketplace AND c.code = p.category_code
+               WHERE p.marketplace = %(m)s AND p.sort = 'relevance' AND NOT p.gone
+                 AND NOT c.gone AND c.is_leaf AND p.products_count > %(min)s
+                 AND (p.is_split = false OR cardinality(p.facet_ids) >= %(terms)s)
+           ) b
+           CROSS JOIN unnest(%(sorts)s::text[], %(labels)s::text[]) AS v(sort, label)
+           ON CONFLICT (marketplace, category_code, filters, sort) DO UPDATE SET
+               gone = false, parent_id = EXCLUDED.parent_id,
+               products_count = greatest(s.products_count, EXCLUDED.products_count),
+               popularity = EXCLUDED.popularity
+           WHERE s.gone OR s.popularity <> EXCLUDED.popularity
+              OR s.products_count < EXCLUDED.products_count""",
+        {
+            "m": marketplace,
+            "min": min_count,
+            "terms": max_terms,
+            "w": segment_weight,
+            "sw": sort_weight,
+            "now": now,
+            "sorts": list(sorts),
+            "labels": list(labels),
+        },
+    ).rowcount
 
 
 def postpone_split(

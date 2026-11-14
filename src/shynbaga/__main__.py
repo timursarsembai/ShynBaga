@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta
 
-from shynbaga import collector, db, notify
+from shynbaga import catalog, collector, db, notify
 from shynbaga.marketplaces import MarketplaceError, create, identify
 
 DEFAULT_REGION = "750000000"  # Almaty
@@ -15,13 +15,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="shynbaga")
     parser.add_argument(
         "command",
-        choices=["check", "migrate", "collect", "lookup", "test-alert", "hash-password"],
+        choices=[
+            "check", "migrate", "crawl", "collect", "lookup", "test-alert", "hash-password"
+        ],
     )
     parser.add_argument("url", nargs="?", help="product link, for lookup")
     parser.add_argument("--marketplace", default="kaspi")
     parser.add_argument("--category", default=DEFAULT_CATEGORY)
     parser.add_argument("--region", default=DEFAULT_REGION)
     parser.add_argument("--max-products", type=int, default=1000)
+    parser.add_argument(
+        "--hours", type=float, default=6, help="crawl: how long one round sweeps listings"
+    )
+    parser.add_argument(
+        "--tracked",
+        type=int,
+        default=1300,
+        help="crawl: how many of the most popular products get every seller's price",
+    )
     parser.add_argument(
         "--min-interval-hours",
         type=float,
@@ -77,6 +88,8 @@ def main() -> int:
         if args.command == "lookup":
             with db.connect(os.environ["DATABASE_URL"]) as conn:
                 return _lookup(conn, markets[0], external_id, args.region)
+        if args.command == "crawl":
+            return _crawl(markets, args)
         return _collect(markets, args)
     finally:
         for market in markets:
@@ -105,6 +118,33 @@ def _collect(markets, args: argparse.Namespace) -> int:
         raise
     print(result)
     if text := collector.alert_text(market.key, args.category, result):
+        notify.send(text)
+    return 0 if result.status in ("completed", "partial") else 1
+
+
+def _crawl(markets, args: argparse.Namespace) -> int:
+    market = markets[0]
+    settings = catalog.Settings(
+        region=args.region,
+        root=market.root_category,
+        round_length=timedelta(hours=args.hours),
+        tracked=args.tracked,
+    )
+    try:
+        with db.connect(os.environ["DATABASE_URL"]) as conn:
+            db.close_abandoned_runs(conn, market.key, datetime.now(UTC))
+            # Restarts must not cut the pause short after a block.
+            failed_at = db.last_failed_round(conn, market.key, catalog.CATALOG, args.region)
+            if failed_at and datetime.now(UTC) - failed_at < catalog.PAUSE_AFTER_FAILURE:
+                print(f"last round failed at {failed_at:%Y-%m-%d %H:%M} UTC, pausing")
+                return 0
+            result = catalog.crawl(conn, markets, settings)
+    except Exception as error:
+        # Only the type: database errors can quote the connection string.
+        notify.send(f"ShynBaga: сборщик упал с ошибкой {type(error).__name__}.")
+        raise
+    print(result)
+    if text := collector.alert_text(market.key, catalog.CATALOG, result):
         notify.send(text)
     return 0 if result.status in ("completed", "partial") else 1
 

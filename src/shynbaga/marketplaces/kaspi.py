@@ -19,6 +19,8 @@ from datetime import datetime
 from shynbaga.marketplaces import (
     Blocked,
     CardMetrics,
+    Category,
+    CategoryCheck,
     MarketplaceError,
     NotFound,
     Offer,
@@ -36,6 +38,11 @@ USER_AGENT = (
 OFFERS_PAGE_SIZE = 32
 MAX_OFFER_PAGES = 5
 CURRENCY = "KZT"
+# The catalog root. Its answer lists the top-level nodes but trims their children
+# and understates their popularity, so each top-level node is checked on its own.
+ROOT_CATEGORY = "Categories"
+# Page 300 answers, page 305 already 400 (2026-11-14): about 3600 cards per listing.
+MAX_LISTING_PAGES = 300
 # About 8.5 minutes in all: longer than the proxy outages seen so far.
 RETRY_DELAYS = (30.0, 60.0, 120.0, 300.0)
 
@@ -44,6 +51,10 @@ logger = logging.getLogger(__name__)
 
 class _Transient(MarketplaceError):
     """The connection or the server failed, not Kaspi's judgement of us, so a retry may work."""
+
+
+class _BadRequest(MarketplaceError):
+    """HTTP 400: Kaspi answers this past the deepest listing page."""
 
 _LEADING_DIGITS = re.compile(r"^\d+")
 _PRODUCT_PATH = re.compile(r"^/shop/(?:[^/]+/)?p/(?:[^/]*-)?(\d+)[a-z]*/?$", re.IGNORECASE)
@@ -208,6 +219,75 @@ def _promos(raw: object) -> tuple[dict[str, Any], ...]:
     )
 
 
+def parse_category(payload: Any, code: str) -> CategoryCheck:
+    """The node and its children from a /pl/filters answer.
+
+    The tree in the answer runs from the top level down to the asked node and its
+    children. A child with an empty list of its own children is a leaf: that holds
+    under any node but the root, whose answer trims the lists.
+    """
+    data = payload.get("data") if isinstance(payload, dict) else None
+    tree = data.get("treeCategory") if isinstance(data, dict) else None
+    items = tree.get("items") if isinstance(tree, dict) else None
+    if not isinstance(items, list):
+        raise MarketplaceError(f"category {code} answer has no tree")
+    total = _whole(data.get("total")) or 0
+    if code == ROOT_CATEGORY:
+        children = [c for item in items if (c := _category(item, None))]
+        return CategoryCheck(Category(code, "Все категории", total, 0, False), children)
+    node = _find_node(items, code)
+    if node is None:
+        raise MarketplaceError(f"category {code} is missing from its own tree")
+    found = _category(node, False)
+    if found is None:
+        raise MarketplaceError(f"category {code} has an unreadable node")
+    raw_children = node.get("items") if isinstance(node.get("items"), list) else []
+    children = []
+    for item in raw_children:
+        grandchildren = item.get("items") if isinstance(item, dict) else None
+        is_leaf = not grandchildren
+        if child := _category(item, is_leaf):
+            children.append(child)
+    return CategoryCheck(
+        Category(found.code, found.title, found.products_count, found.popularity, not children),
+        children,
+    )
+
+
+def _find_node(items: list, code: str) -> dict | None:
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if _category_code(item.get("id")) == code:
+            return item
+        if isinstance(item.get("items"), list) and (found := _find_node(item["items"], code)):
+            return found
+    return None
+
+
+def _category_code(raw: object) -> str | None:
+    prefix = ":category:"
+    if isinstance(raw, str) and raw.startswith(prefix) and len(raw) > len(prefix):
+        return raw[len(prefix):]
+    return None
+
+
+def _category(item: object, is_leaf: bool | None) -> Category | None:
+    if not isinstance(item, dict):
+        return None
+    code = _category_code(item.get("id"))
+    if code is None:
+        return None
+    title = _text(item.get("titleRu")) or _text(item.get("title")) or code
+    return Category(
+        code=code,
+        title=title,
+        products_count=_whole(item.get("count")) or 0,
+        popularity=_whole(item.get("popularity")) or 0,
+        is_leaf=is_leaf,
+    )
+
+
 def parse_product(payload: Any, external_id: str) -> Product:
     card = payload.get("card") if isinstance(payload, dict) else None
     title = _text(card.get("name")) if isinstance(card, dict) else None
@@ -267,8 +347,25 @@ def _price(raw: object) -> Decimal | None:
     return price if price.is_finite() and price > 0 else None
 
 
+def _category_referer(category: str, region: str) -> str:
+    return f"{BASE_URL}/shop/c/{quote(category.lower())}/?c={region}"
+
+
+def _listing_params(category: str, region: str, page: int) -> dict[str, Any]:
+    return {
+        "q": f":category:{category}",
+        "page": page,
+        "c": region,
+        "ui": "d",
+        "sort": "relevance",
+        "i": -1,
+    }
+
+
 class Kaspi:
     key = "kaspi"
+    max_listing_pages = MAX_LISTING_PAGES
+    root_category = ROOT_CATEGORY
 
     def __init__(
         self,
@@ -309,22 +406,31 @@ class Kaspi:
         return httpx.Client(proxy=proxy, transport=self._transport, **self._client_options)
 
     def list_products(self, category: str, region: str, page: int) -> list[Product]:
+        try:
+            payload = self._request(
+                "GET",
+                # /pl/filters is heavier and answers 400 from page 2 on.
+                "/yml/product-view/pl/results",
+                region,
+                referer=_category_referer(category, region),
+                params=_listing_params(category, region, page),
+            )
+        except _BadRequest:
+            if page == 0:
+                raise
+            return []  # past the deepest page Kaspi serves
+        return parse_products(payload)
+
+    def fetch_category(self, code: str, region: str) -> CategoryCheck:
         payload = self._request(
             "GET",
-            # /pl/filters is heavier and answers 400 from page 2 on.
-            "/yml/product-view/pl/results",
+            # Only page 0 of /pl/filters works, and that is all the tree needs.
+            "/yml/product-view/pl/filters",
             region,
-            referer=f"{BASE_URL}/shop/c/{category.lower()}/?c={region}",
-            params={
-                "q": f":category:{category}",
-                "page": page,
-                "c": region,
-                "ui": "d",
-                "sort": "relevance",
-                "i": -1,
-            },
+            referer=_category_referer(code, region),
+            params=_listing_params(code, region, 0),
         )
-        return parse_products(payload)
+        return parse_category(payload, code)
 
     def fetch_product(self, external_id: str, region: str) -> Product:
         payload = self._request(
@@ -436,6 +542,8 @@ class Kaspi:
             raise _Transient(f"HTTP {response.status_code} on {path}")
         if response.status_code == 404:
             raise NotFound(f"HTTP 404 on {path}")
+        if response.status_code == 400:
+            raise _BadRequest(f"HTTP 400 on {path}")
         if response.status_code != 200:
             raise MarketplaceError(f"HTTP {response.status_code} on {path}")
         if accept and "json" not in accept:

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Категории{% endblock %}
+{% block body %}
+<h1>Категории</h1>
+<div class="stats">
+  <span>Узлов дерева <b>{{ totals.nodes | num }}</b></span>
+  <span>Ещё не раскрыто <b>{{ totals.unchecked | num }}</b></span>
+  <span>Конечных категорий <b>{{ totals.leaves | num }}</b></span>
+  <span>Обойдено хотя бы раз <b>{{ totals.swept | num }}</b></span>
+  <span>Товаров в конечных (по Каспи) <b>{{ totals.leaf_products | num }}</b></span>
+  <span>Карточек в последних обходах <b>{{ totals.swept_products | num }}</b></span>
+</div>
+<p class="muted">Очередь обхода: популярность по данным Каспи × время с прошлого обхода ÷ число страниц. Каспи отдаёт не больше 300 страниц (около 3600 товаров) на категорию.</p>
+<form class="filters" method="get" action="/categories">
+  <label>Поиск<input name="q" value="{{ f.q }}" size="30"></label>
+  <label>Показать<select name="only">
+    <option value="">все</option>
+    <option value="leaves" {{ 'selected' if f.only == 'leaves' }}>конечные</option>
+    <option value="swept" {{ 'selected' if f.only == 'swept' }}>обойдённые</option>
+    <option value="unswept" {{ 'selected' if f.only == 'unswept' }}>ещё не обойдённые</option>
+  </select></label>
+  <label>Сортировка<select name="sort">
+    {% for key, label in [('popular','популярность'),('count','товаров'),('swept','последний обход'),('title','название')] %}
+    <option value="{{ key }}" {{ 'selected' if f.sort == key }}>{{ label }}</option>{% endfor %}
+  </select></label>
+  <button>Найти</button> <a href="/categories">сбросить</a>
+</form>
+<table>
+<tr><th>Категория</th><th>Родитель</th><th class="n">Уровень</th><th class="n">Товаров (Каспи)</th><th class="n">Популярность</th><th>Тип</th><th>Проверена</th><th>Обойдена</th><th class="n">Карточек</th></tr>
+{% for c in rows %}
+<tr>
+  <td>{% if c.is_leaf %}<a href="/?category={{ c.code | urlencode }}">{{ c.title }}</a>{% else %}{{ c.title }}{% endif %}<br><span class="muted">{{ c.code }}</span></td>
+  <td>{{ c.parent_title or '—' }}</td>
+  <td class="n">{{ c.depth }}</td>
+  <td class="n">{{ c.products_count | num }}</td>
+  <td class="n">{{ c.popularity | num }}</td>
+  <td>{{ 'конечная' if c.is_leaf else ('раздел' if c.is_leaf is false else 'не раскрыта') }}</td>
+  <td class="nw">{{ c.checked_at | when }}</td>
+  <td class="nw">{{ c.swept_at | when }}</td>
+  <td class="n">{{ c.swept_products | num }}</td>
+</tr>
+{% else %}<tr><td colspan="9" class="muted">Категорий пока нет</td></tr>{% endfor %}
+</table>
+{% include "_pager.html" %}
+{% endblock %}

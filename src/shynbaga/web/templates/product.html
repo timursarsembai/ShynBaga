@@ -7,11 +7,12 @@
   <dl class="kv">
     <dt>ID Каспи</dt><dd>{{ p.external_id }} {% if p.url %}· <a href="{{ p.url }}" target="_blank" rel="noreferrer noopener">открыть на Каспи ↗</a>{% endif %}</dd>
     <dt>Бренд</dt><dd>{{ p.brand or '—' }}</dd>
-    <dt>Категория</dt><dd>{{ p.category_path | join(' › ') or '—' }}</dd>
+    <dt>Категория</dt><dd>{{ p.category_path | join(' › ') or '—' }}{% if p.category_code %} · <a href="/?category={{ p.category_code | urlencode }}">товары категории</a>{% endif %}</dd>
     <dt>Сейчас</dt><dd>от <b>{{ p.min_price | money }}</b> до {{ p.max_price | money }} · продавцов {{ p.sellers_now or 0 }}{% if p.offers_total %} (по данным Каспи {{ p.offers_total }}){% endif %}</dd>
     <dt>В карточке</dt><dd>{{ p.card_price | money }}{% if p.list_price %} · старая цена {{ p.list_price | money }}{% endif %}{% if p.price_with_bonus %} · с бонусами {{ p.price_with_bonus | money }}{% endif %}</dd>
     <dt>Рейтинг</dt><dd>{{ p.rating | num(2) if p.rating is not none else '—' }} · отзывов {{ p.reviews_count | num }}</dd>
-    <dt>Место в выдаче</dt><dd>{{ p.position if p.position is not none else '—' }}</dd>
+    <dt>Место в категории</dt><dd>{{ p.position if p.position is not none else '—' }}</dd>
+    <dt>Карточка в списке / цены продавцов</dt><dd>{{ p.card_seen_at | when }} / {{ p.offers_checked_at | when }}</dd>
     <dt>Впервые / последний раз</dt><dd>{{ p.first_seen_at | when }} / {{ p.last_seen_at | when }}</dd>
     <dt>Запрошен по ссылке</dt><dd>{{ p.requested_at | when }}</dd>
   </dl>
@@ -23,7 +24,22 @@
   <polyline points="{{ chart.points }}"/>
 </svg>
 <p class="muted">{{ chart.start | when }} — {{ chart.end | when }} · от {{ chart.low | money }} до {{ chart.high | money }}</p>
-{% else %}<p class="muted">Цен пока нет.</p>{% endif %}
+{% else %}<p class="muted">Цены продавцов собираются только для самых популярных товаров и запрошенных по ссылке.</p>{% endif %}
+
+<h2>Цена в списке категории</h2>
+<p class="muted">Самая низкая цена, которую показывает карточка в списке. Есть для всех собранных товаров.</p>
+{% if card_chart %}
+<svg class="chart" width="{{ card_chart.width }}" height="{{ card_chart.height }}" viewBox="0 0 {{ card_chart.width }} {{ card_chart.height }}" role="img">
+  <polyline points="{{ card_chart.points }}"/>
+</svg>
+<p class="muted">{{ card_chart.start | when }} — {{ card_chart.end | when }} · от {{ card_chart.low | money }} до {{ card_chart.high | money }}</p>
+{% else %}<p class="muted">Цен из списка пока нет.</p>{% endif %}
+<table>
+<tr><th class="n">Цена</th><th class="n">Старая</th><th>С</th><th>По</th></tr>
+{% for c in cards %}
+<tr><td class="n">{{ c.price | money }}</td><td class="n">{{ c.list_price | money }}</td><td class="nw">{{ c.first_seen_at | when }}</td><td class="nw">{{ c.last_seen_at | when }}</td></tr>
+{% endfor %}
+</table>
 
 <h2>Текущие предложения ({{ current | length }})</h2>
 <table>

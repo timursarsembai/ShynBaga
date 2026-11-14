@@ -7,41 +7,58 @@ from psycopg.rows import dict_row
 
 PAGE_SIZE = 50
 
-# Latest card snapshot and current offers per product.
-_PRODUCT_ROWS = """
-WITH cur AS (
-    SELECT product_id, min(price) AS min_price, max(price) AS max_price,
-           count(*) AS sellers_now, max(last_seen_at) AS price_seen_at
-    FROM price_intervals WHERE is_current GROUP BY product_id
-), changes AS (
-    SELECT product_id, count(*) AS intervals FROM price_intervals GROUP BY product_id
-), snap AS (
-    SELECT DISTINCT ON (product_id) product_id, position, rating, reviews_count,
-           price AS card_price, list_price, price_with_bonus, delivery, promos,
-           offers_total, observed_at
-    FROM product_snapshots ORDER BY product_id, observed_at DESC
-)
-SELECT p.id, p.marketplace, p.external_id, p.title, p.brand, p.category_path, p.url,
-       p.first_seen_at, p.last_seen_at, p.requested_at, p.listed_at,
-       cur.min_price, cur.max_price, cur.sellers_now, cur.price_seen_at,
-       coalesce(changes.intervals, 0) AS intervals,
-       snap.position, snap.rating, snap.reviews_count, snap.card_price, snap.list_price,
-       snap.price_with_bonus, snap.delivery, snap.promos, snap.offers_total,
-       count(*) OVER () AS total
+# Summaries come from products' own columns, so a page is the LIMIT over products
+# alone; the latest snapshot is looked up only for the rows shown. Card fields fall
+# back to that snapshot for products not listed since the catalog crawl began.
+_PRODUCT_FROM = """
 FROM products p
-LEFT JOIN cur ON cur.product_id = p.id
-LEFT JOIN changes ON changes.product_id = p.id
-LEFT JOIN snap ON snap.product_id = p.id
+LEFT JOIN categories c ON c.marketplace = p.marketplace AND c.code = p.category_code
 """
 
+_PRODUCT_ROWS = """
+SELECT p.id, p.marketplace, p.external_id, p.title, p.brand, p.category_path, p.url,
+       p.first_seen_at, p.last_seen_at, p.requested_at, p.listed_at, p.card_seen_at,
+       p.offers_checked_at, p.category_code, c.title AS category_title,
+       p.offers_min_price AS min_price, p.offers_max_price AS max_price, p.sellers_now,
+       p.offer_intervals AS intervals, p.card_changes,
+       coalesce(p.position, snap.position) AS position,
+       coalesce((p.card->>'rating')::numeric, snap.rating) AS rating,
+       coalesce((p.card->>'reviews_count')::integer, snap.reviews_count) AS reviews_count,
+       coalesce(p.card_price, snap.price) AS card_price,
+       coalesce((p.card->>'list_price')::numeric, snap.list_price) AS list_price,
+       coalesce((p.card->>'price_with_bonus')::numeric, snap.price_with_bonus)
+           AS price_with_bonus,
+       coalesce(p.card->>'delivery', snap.delivery) AS delivery,
+       coalesce(p.card->'promos', snap.promos) AS promos,
+       snap.offers_total
+FROM (SELECT p.* {from_} {where} ORDER BY {order} LIMIT %(limit)s OFFSET %(offset)s) p
+LEFT JOIN categories c ON c.marketplace = p.marketplace AND c.code = p.category_code
+LEFT JOIN LATERAL (
+    SELECT position, rating, reviews_count, price, list_price, price_with_bonus, delivery,
+           promos, offers_total
+    FROM product_snapshots s WHERE s.product_id = p.id
+    ORDER BY observed_at DESC LIMIT 1
+) snap ON true
+ORDER BY {outer_order}
+"""
+
+# Counting millions of rows for the pager is slow; past this the pager says "more".
+COUNT_CAP = 10_000
+
+# Sellers' lowest price where we have it, else the listing card's.
+_PRICE = "coalesce(p.offers_min_price, p.card_price)"
+
+# Each sort uses only products' columns: (inner order, outer order over the page).
 PRODUCT_SORTS = {
-    "position": "snap.position ASC NULLS LAST, p.id",
+    # The same estimate that picks products for sellers' prices; indexed.
+    "popular": "p.score DESC NULLS LAST, p.id",
+    "position": "p.position ASC NULLS LAST, p.id",
     "title": "p.title, p.id",
-    "price": "cur.min_price ASC NULLS LAST, p.id",
-    "price_desc": "cur.min_price DESC NULLS LAST, p.id",
-    "sellers": "cur.sellers_now DESC NULLS LAST, p.id",
-    "reviews": "snap.reviews_count DESC NULLS LAST, p.id",
-    "changes": "intervals DESC, p.id",
+    "price": f"{_PRICE} ASC NULLS LAST, p.id",
+    "price_desc": f"{_PRICE} DESC NULLS LAST, p.id",
+    "sellers": "p.sellers_now DESC, p.id",
+    "reviews": "(p.card->>'reviews_count')::integer DESC NULLS LAST, p.id",
+    "changes": "p.offer_intervals + p.card_changes DESC, p.id",
     "seen": "p.last_seen_at DESC, p.id",
     "new": "p.first_seen_at DESC, p.id",
 }
@@ -74,46 +91,53 @@ def _cursor(conn: psycopg.Connection):
     return conn.cursor(row_factory=dict_row)
 
 
-def brands(conn: psycopg.Connection) -> list[str]:
-    rows = conn.execute(
-        "SELECT DISTINCT brand FROM products WHERE brand IS NOT NULL ORDER BY brand"
-    ).fetchall()
-    return [r[0] for r in rows]
-
-
 def products(
     conn: psycopg.Connection, *, q: str = "", brand: str = "", price_from: str = "",
-    price_to: str = "", only: str = "", sort: str = "position", page: int = 1,
-) -> tuple[list[dict], int]:
+    price_to: str = "", only: str = "", category: str = "", sort: str = "popular",
+    page: int = 1,
+) -> tuple[list[dict], int, bool]:
+    """A page of products, the total, and whether the total stopped at COUNT_CAP."""
     where, params = [], {}
     q = q.strip()
     if q:
         where.append("(p.title ILIKE %(pat)s OR p.external_id = %(q)s OR p.brand ILIKE %(pat)s)")
         params |= {"q": q, "pat": _like(q)}
-    if brand:
-        where.append("p.brand = %(brand)s")
-        params["brand"] = brand
+    if brand := brand.strip():
+        where.append("p.brand ILIKE %(brand)s")
+        params["brand"] = _like(brand)
+    if category:
+        where.append("p.category_code = %(category)s")
+        params["category"] = category
     if (low := _money(price_from)) is not None:
-        where.append("cur.min_price >= %(low)s")
+        where.append(f"{_PRICE} >= %(low)s")
         params["low"] = low
     if (high := _money(price_to)) is not None:
-        where.append("cur.min_price <= %(high)s")
+        where.append(f"{_PRICE} <= %(high)s")
         params["high"] = high
     if only == "requested":
         where.append("p.requested_at IS NOT NULL")
     elif only == "changed":
-        where.append("coalesce(changes.intervals, 0) > coalesce(cur.sellers_now, 0)")
+        where.append("p.offer_intervals > p.sellers_now")
+    elif only == "card_changed":
+        where.append("p.card_changes > 0")
+    elif only == "with_offers":
+        where.append("p.sellers_now > 0")
     elif only == "no_offers":
-        where.append("cur.product_id IS NULL")
-    sql = _PRODUCT_ROWS
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += f" ORDER BY {PRODUCT_SORTS.get(sort, PRODUCT_SORTS['position'])}"
-    sql += " LIMIT %(limit)s OFFSET %(offset)s"
+        where.append("p.sellers_now = 0")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    order = PRODUCT_SORTS.get(sort, PRODUCT_SORTS["popular"])
+    sql = _PRODUCT_ROWS.format(
+        from_=_PRODUCT_FROM, where=where_sql, order=order,
+        # The page keeps its order: the same expression, read off the page's rows.
+        outer_order=order,
+    )
     params |= {"limit": PAGE_SIZE, "offset": (max(page, 1) - 1) * PAGE_SIZE}
     rows = _cursor(conn).execute(sql, params).fetchall()
-    total = rows[0]["total"] if rows else _count_beyond_last_page(conn, sql, params)
-    return rows, total
+    counted = conn.execute(
+        f"SELECT count(*) FROM (SELECT 1 {_PRODUCT_FROM} {where_sql} LIMIT %(cap)s) x",
+        params | {"cap": COUNT_CAP + 1},
+    ).fetchone()[0]
+    return rows, min(counted, COUNT_CAP), counted > COUNT_CAP
 
 
 def _count_beyond_last_page(conn, sql: str, params: dict) -> int:
@@ -125,7 +149,10 @@ def _count_beyond_last_page(conn, sql: str, params: dict) -> int:
 
 
 def product(conn: psycopg.Connection, product_id: int) -> dict | None:
-    return _cursor(conn).execute(_PRODUCT_ROWS + " WHERE p.id = %s", (product_id,)).fetchone()
+    sql = _PRODUCT_ROWS.format(
+        from_=_PRODUCT_FROM, where="WHERE p.id = %(id)s", order="p.id", outer_order="p.id"
+    )
+    return _cursor(conn).execute(sql, {"id": product_id, "limit": 1, "offset": 0}).fetchone()
 
 
 def product_offers(conn: psycopg.Connection, product_id: int) -> list[dict]:
@@ -139,6 +166,66 @@ def product_offers(conn: psycopg.Connection, product_id: int) -> list[dict]:
                     s.name, i.first_seen_at DESC""",
         (product_id,),
     ).fetchall()
+
+
+def card_prices(conn: psycopg.Connection, product_id: int) -> list[dict]:
+    return _cursor(conn).execute(
+        """SELECT region, price, list_price, first_seen_at, last_seen_at, is_current
+           FROM card_prices WHERE product_id = %s ORDER BY first_seen_at DESC""",
+        (product_id,),
+    ).fetchall()
+
+
+CATEGORY_SORTS = {
+    "popular": "c.popularity DESC, c.code",
+    "count": "c.products_count DESC, c.code",
+    "swept": "c.swept_at DESC NULLS LAST, c.code",
+    "title": "c.title, c.code",
+}
+
+
+def categories(
+    conn: psycopg.Connection, *, q: str = "", only: str = "", sort: str = "popular",
+    page: int = 1,
+) -> tuple[list[dict], int]:
+    where, params = ["NOT c.gone"], {}
+    q = q.strip()
+    if q:
+        where.append("(c.title ILIKE %(pat)s OR c.code ILIKE %(pat)s)")
+        params["pat"] = _like(q)
+    if only == "leaves":
+        where.append("c.is_leaf")
+    elif only == "swept":
+        where.append("c.swept_at IS NOT NULL")
+    elif only == "unswept":
+        where.append("c.is_leaf AND c.swept_at IS NULL")
+    sql = f"""SELECT c.code, c.title, c.depth, c.products_count, c.popularity, c.is_leaf,
+                     c.checked_at, c.swept_at, c.swept_products, parent.title AS parent_title,
+                     count(*) OVER () AS total
+              FROM categories c
+              LEFT JOIN categories parent
+                     ON parent.marketplace = c.marketplace AND parent.code = c.parent_code
+              WHERE {" AND ".join(where)}
+              ORDER BY {CATEGORY_SORTS.get(sort, CATEGORY_SORTS["popular"])}
+              LIMIT %(limit)s OFFSET %(offset)s"""
+    params |= {"limit": PAGE_SIZE, "offset": (max(page, 1) - 1) * PAGE_SIZE}
+    rows = _cursor(conn).execute(sql, params).fetchall()
+    total = rows[0]["total"] if rows else _count_beyond_last_page(conn, sql, params)
+    return rows, total
+
+
+def catalog_totals(conn: psycopg.Connection) -> dict:
+    return _cursor(conn).execute(
+        """SELECT count(*) FILTER (WHERE NOT gone) AS nodes,
+                  count(*) FILTER (WHERE is_leaf AND NOT gone) AS leaves,
+                  count(*) FILTER (WHERE swept_at IS NOT NULL AND NOT gone) AS swept,
+                  count(*) FILTER (WHERE is_leaf IS NOT TRUE AND checked_at IS NULL
+                                   AND NOT gone) AS unchecked,
+                  coalesce(sum(products_count) FILTER (WHERE is_leaf AND NOT gone), 0)
+                      AS leaf_products,
+                  coalesce(sum(swept_products) FILTER (WHERE NOT gone), 0) AS swept_products
+           FROM categories"""
+    ).fetchone()
 
 
 def product_snapshots(conn: psycopg.Connection, product_id: int) -> list[dict]:
@@ -257,18 +344,26 @@ def seller_history(conn: psycopg.Connection, seller_id: int) -> tuple[list[dict]
 def runs(conn: psycopg.Connection) -> list[dict]:
     return _cursor(conn).execute(
         """SELECT id, marketplace, category, region, started_at, finished_at, status,
-                  products_ok, products_failed, bytes_received, error,
+                  products_ok, products_failed, bytes_received, error, cards_seen,
+                  categories_checked, leaves_swept,
                   finished_at - started_at AS took
            FROM crawl_runs ORDER BY id DESC"""
     ).fetchall()
 
 
 def totals(conn: psycopg.Connection) -> dict:
+    """Row counts. The big tables use the planner's estimate: exact counts of
+    millions of rows on every page load would be slow."""
     return _cursor(conn).execute(
-        """SELECT (SELECT count(*) FROM products) AS products,
+        """SELECT (SELECT greatest(reltuples, 0)::bigint FROM pg_class
+                   WHERE oid = 'products'::regclass) AS products,
                   (SELECT count(*) FROM sellers) AS sellers,
-                  (SELECT count(*) FROM price_intervals) AS intervals,
-                  (SELECT count(*) FROM product_snapshots) AS snapshots,
+                  (SELECT greatest(reltuples, 0)::bigint FROM pg_class
+                   WHERE oid = 'price_intervals'::regclass) AS intervals,
+                  (SELECT greatest(reltuples, 0)::bigint FROM pg_class
+                   WHERE oid = 'product_snapshots'::regclass) AS snapshots,
+                  (SELECT greatest(reltuples, 0)::bigint FROM pg_class
+                   WHERE oid = 'card_prices'::regclass) AS card_prices,
                   (SELECT count(*) FROM seller_profiles) AS profiles,
                   (SELECT count(*) FROM crawl_runs) AS runs"""
     ).fetchone()

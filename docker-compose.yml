@@ -29,7 +29,9 @@ services:
     entrypoint:
       - sh
       - -c
-      - shynbaga migrate; while true; do shynbaga collect --max-products 1800 --min-interval-hours 6; sleep 600; done
+      # One round sweeps for 6 hours, the next starts at once. After a blocked or
+      # failed round `crawl` declines to start for 6 hours, restarts included.
+      - shynbaga migrate; while true; do shynbaga crawl --hours 6; sleep 60; done
     environment:
       DATABASE_URL: postgresql://shynbaga:${POSTGRES_PASSWORD}@postgres:5432/shynbaga
       SHYNBAGA_PROXY_URLS: ${SHYNBAGA_PROXY_URLS:-}

@@ -3,12 +3,13 @@
 {% block body %}
 <h1>Обходы</h1>
 <table>
-<tr><th class="n">№</th><th>Маркетплейс</th><th>Категория</th><th>Начало</th><th>Конец</th><th class="n">Длительность</th><th>Статус</th><th class="n">Товаров</th><th class="n">Ошибок</th><th class="n">Трафик</th><th>Ошибка</th></tr>
+<tr><th class="n">№</th><th>Маркетплейс</th><th>Категория</th><th>Начало</th><th>Конец</th><th class="n">Длительность</th><th>Статус</th><th class="n">Цены продавцов</th><th class="n">Ошибок</th><th class="n">Карточек</th><th class="n">Категорий обойдено</th><th class="n">Узлов дерева</th><th class="n">Трафик</th><th>Ошибка</th></tr>
 {% for r in runs %}
 <tr><td class="n">{{ r.id }}</td><td>{{ r.marketplace }}</td><td>{{ r.category }}</td><td class="nw">{{ r.started_at | when }}</td><td class="nw">{{ r.finished_at | when }}</td>
 <td class="n">{{ r.took | took }}</td>
 <td class="{{ 'good' if r.status == 'completed' else ('bad' if r.status in ('failed', 'blocked') else '') }}">{{ r.status }}</td>
 <td class="n">{{ r.products_ok | num }}</td><td class="n">{{ r.products_failed | num }}</td>
+<td class="n">{{ r.cards_seen | num }}</td><td class="n">{{ r.leaves_swept | num }}</td><td class="n">{{ r.categories_checked | num }}</td>
 <td class="n">{{ (r.bytes_received / 1048576) | num(1) }} МБ</td><td class="muted">{{ r.error or '' }}</td></tr>
 {% endfor %}
 </table>

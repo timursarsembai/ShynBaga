@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from shynbaga import db
 from shynbaga.web import auth
 from shynbaga.web.app import _safe_next, create_app
 
@@ -54,6 +55,34 @@ def data(conn):
         """INSERT INTO seller_profiles (seller_id, observed_on, state, score, cancelled_pct)
            VALUES (1, '2026-11-09', 'TOP', 4.9, 1.5)"""
     )
+    conn.execute(
+        """INSERT INTO categories (marketplace, code, parent_code, title, depth,
+                                   products_count, popularity, is_leaf, checked_at, swept_at,
+                                   swept_products)
+           VALUES ('kaspi', 'Categories', NULL, 'Все категории', 0, 0, 0, false, %(t1)s,
+                   NULL, NULL),
+                  ('kaspi', 'Lamps', 'Categories', 'Лампы', 1, 40, 200, true, %(t1)s,
+                   %(t2)s, 1)""",
+        {"t1": T1, "t2": T2},
+    )
+    conn.execute(
+        """INSERT INTO products (id, marketplace, external_id, title, category_path,
+                                 first_seen_at, last_seen_at, category_code, position,
+                                 card_price, card_seen_at, card)
+           VALUES (3, 'kaspi', '333', 'Lamp Three', '{}', %(t1)s, %(t2)s, 'Lamps', 1,
+                   7000, %(t2)s, '{"rating": "4.5", "reviews_count": 12, "promos": []}')""",
+        {"t1": T1, "t2": T2},
+    )
+    conn.execute(
+        """INSERT INTO card_prices (product_id, region, price, first_seen_at, last_seen_at,
+                                    is_current)
+           VALUES (3, '750000000', 8000, %(t1)s, %(t1)s, false),
+                  (3, '750000000', 7000, %(t2)s, %(t2)s, true)""",
+        {"t1": T1, "t2": T2},
+    )
+    conn.execute("UPDATE products SET card_changes = 1, score = 200 WHERE id = 3")
+    for product_id in (1, 2):
+        db._summarize_offers(conn, product_id)
     conn.commit()
     return conn
 
@@ -111,7 +140,7 @@ def test_next_stays_on_site():
 
 
 def test_pages_need_login(client):
-    for path in ("/", "/products/1", "/sellers", "/sellers/1", "/runs"):
+    for path in ("/", "/products/1", "/sellers", "/sellers/1", "/runs", "/categories"):
         response = client.get(path, follow_redirects=False)
         assert response.status_code == 303
         assert response.headers["location"].startswith("/login?next=")
@@ -163,6 +192,20 @@ def test_product_filters(client):
     assert "Ничего не найдено" in client.get("/?q=%25%25nothing").text
     assert client.get("/?sort=bogus;drop").status_code == 200
     assert "Ничего не найдено" in client.get("/?page_no=5").text
+
+
+def test_catalog_products_and_categories(client):
+    login(client)
+    lamps = client.get("/?category=Lamps").text
+    assert "Lamp Three" in lamps and "Phone Two" not in lamps
+    assert "Lamp Three" in client.get("/?price_to=7500").text
+    assert "Lamp Three" in client.get("/?only=card_changed").text
+    lamp = client.get("/products/3").text
+    assert "<polyline" in lamp and "товары категории" in lamp
+    categories = client.get("/categories").text
+    assert "Лампы" in categories and "конечная" in categories
+    assert "Лампы" not in client.get("/categories?only=unswept").text
+    assert client.get("/categories?sort=bogus;drop").status_code == 200
 
 
 def test_seller_filters(client):

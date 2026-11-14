@@ -92,7 +92,8 @@ def _safe_next(target: str | None) -> str:
 
 
 def _chart(offers: list[dict]) -> dict | None:
-    """Lowest price among sellers over time, as SVG polyline points."""
+    """Lowest price over time, as SVG polyline points: among sellers' price stretches,
+    or of listing-card stretches, which are already lowest prices."""
     series = db.lowest_prices(
         [Period(o["price"], o["first_seen_at"], o["last_seen_at"]) for o in offers]
     )
@@ -218,18 +219,21 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     def products_page(
         request: Request, q: str = "", brand: str = "", price_from: str = "",
-        price_to: str = "", only: str = "", sort: str = "position", page_no: int = 1,
+        price_to: str = "", only: str = "", category: str = "", sort: str = "popular",
+        page_no: int = 1,
     ):
         with pool.connection() as conn:
-            rows, total = queries.products(
+            rows, total, capped = queries.products(
                 conn, q=q, brand=brand, price_from=price_from, price_to=price_to,
-                only=only, sort=sort, page=page_no,
+                only=only, category=category, sort=sort, page=page_no,
             )
             return page(
-                request, "products.html", rows=rows, total=total, page_no=max(page_no, 1),
-                pages=max(1, -(-total // queries.PAGE_SIZE)), brands=queries.brands(conn),
+                request, "products.html", rows=rows, total=total, capped=capped,
+                page_no=max(page_no, 1),
+                pages=max(1, -(-total // queries.PAGE_SIZE)),
                 totals=queries.totals(conn), f={"q": q, "brand": brand, "price_from": price_from,
-                "price_to": price_to, "only": only, "sort": sort}, section="products",
+                "price_to": price_to, "only": only, "category": category, "sort": sort},
+                section="products",
             )
 
     @app.get("/products/{product_id}", response_class=HTMLResponse)
@@ -239,8 +243,10 @@ def create_app(
             if item is None:
                 return page(request, "missing.html", status=404, what="Товар не найден")
             offers = queries.product_offers(conn, product_id)
+            cards = queries.card_prices(conn, product_id)
             return page(
-                request, "product.html", p=item, offers=offers,
+                request, "product.html", p=item, offers=offers, cards=cards,
+                card_chart=_chart(cards) if cards else None,
                 current=[o for o in offers if o["is_current"]],
                 past=[o for o in offers if not o["is_current"]],
                 snapshots=queries.product_snapshots(conn, product_id),
@@ -269,6 +275,19 @@ def create_app(
             return page(
                 request, "seller.html", s=item, products=queries.seller_products(conn, seller_id),
                 profiles=profiles, ratings=ratings, section="sellers",
+            )
+
+    @app.get("/categories", response_class=HTMLResponse)
+    def categories_page(
+        request: Request, q: str = "", only: str = "", sort: str = "popular", page_no: int = 1,
+    ):
+        with pool.connection() as conn:
+            rows, total = queries.categories(conn, q=q, only=only, sort=sort, page=page_no)
+            return page(
+                request, "categories.html", rows=rows, total=total, page_no=max(page_no, 1),
+                pages=max(1, -(-total // queries.PAGE_SIZE)),
+                totals=queries.catalog_totals(conn),
+                f={"q": q, "only": only, "sort": sort}, section="categories",
             )
 
     @app.get("/runs", response_class=HTMLResponse)

@@ -108,6 +108,98 @@ CREATE TABLE IF NOT EXISTS seller_profiles (
     PRIMARY KEY (seller_id, observed_on)
 );
 
+
+-- The catalog tree. Popularity is the marketplace's own figure, as given in the
+-- answer for the node itself or its parent (the root's answer understates it).
+-- is_leaf is null until a check showed whether the node has children.
+CREATE TABLE IF NOT EXISTS categories (
+    marketplace    text NOT NULL,
+    code           text NOT NULL,
+    parent_code    text,
+    title          text NOT NULL,
+    depth          integer NOT NULL,
+    products_count integer NOT NULL DEFAULT 0,
+    popularity     bigint NOT NULL DEFAULT 0,
+    is_leaf        boolean,
+    checked_at     timestamptz,
+    -- No longer listed under its parent.
+    gone           boolean NOT NULL DEFAULT false,
+    swept_at       timestamptz,
+    swept_products integer,
+    PRIMARY KEY (marketplace, code)
+);
+
+-- The lowest price a listing card showed, one row per stretch of an unchanged value,
+-- like price_intervals but without a seller. This covers the whole catalog.
+CREATE TABLE IF NOT EXISTS card_prices (
+    id            bigserial PRIMARY KEY,
+    product_id    bigint NOT NULL REFERENCES products (id),
+    region        text NOT NULL,
+    price         numeric(14, 2) NOT NULL CHECK (price > 0),
+    list_price    numeric(14, 2),
+    first_seen_at timestamptz NOT NULL,
+    last_seen_at  timestamptz NOT NULL,
+    is_current    boolean NOT NULL DEFAULT true
+);
+CREATE UNIQUE INDEX IF NOT EXISTS card_prices_one_current
+    ON card_prices (product_id, region) WHERE is_current;
+CREATE INDEX IF NOT EXISTS card_prices_history
+    ON card_prices (product_id, region, first_seen_at);
+
+-- The latest listing card, so the seller layer can snapshot it without a re-read.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS category_code text;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS position integer;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS card jsonb;
+ALTER TABLE products ADD COLUMN IF NOT EXISTS card_price numeric(14, 2);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS card_seen_at timestamptz;
+-- When sellers' prices were last fetched; last_seen_at now also moves with listings.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT FROM information_schema.columns
+        WHERE table_name = 'products' AND column_name = 'offers_checked_at'
+    ) THEN
+        ALTER TABLE products ADD COLUMN offers_checked_at timestamptz;
+        UPDATE products SET offers_checked_at = last_seen_at;
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS products_category ON products (category_code);
+
+-- What a catalog round did beyond the products whose sellers it checked.
+ALTER TABLE crawl_runs ADD COLUMN IF NOT EXISTS cards_seen integer NOT NULL DEFAULT 0;
+ALTER TABLE crawl_runs ADD COLUMN IF NOT EXISTS categories_checked integer NOT NULL DEFAULT 0;
+ALTER TABLE crawl_runs ADD COLUMN IF NOT EXISTS leaves_swept integer NOT NULL DEFAULT 0;
+
+-- Per-product summaries, kept up by the collector, so admin lists stay fast as the
+-- catalog grows: sellers' current prices, how many price stretches there were, how
+-- many times the card price changed, and the popularity estimate for sorting.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT FROM information_schema.columns
+        WHERE table_name = 'products' AND column_name = 'sellers_now'
+    ) THEN
+        ALTER TABLE products
+            ADD COLUMN offers_min_price numeric(14, 2),
+            ADD COLUMN offers_max_price numeric(14, 2),
+            ADD COLUMN sellers_now integer NOT NULL DEFAULT 0,
+            ADD COLUMN offer_intervals integer NOT NULL DEFAULT 0,
+            ADD COLUMN card_changes integer NOT NULL DEFAULT 0,
+            ADD COLUMN score double precision;
+        UPDATE products p SET
+            offers_min_price = s.min_price, offers_max_price = s.max_price,
+            sellers_now = s.sellers_now, offer_intervals = s.intervals
+        FROM (
+            SELECT product_id, min(price) FILTER (WHERE is_current) AS min_price,
+                   max(price) FILTER (WHERE is_current) AS max_price,
+                   count(*) FILTER (WHERE is_current) AS sellers_now, count(*) AS intervals
+            FROM price_intervals GROUP BY product_id
+        ) s
+        WHERE s.product_id = p.id;
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS products_score ON products (score DESC NULLS LAST, id);
+
 -- The admin site reads through its own role, created once by hand with a password.
 DO $$
 BEGIN

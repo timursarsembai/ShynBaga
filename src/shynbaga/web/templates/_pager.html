@@ -1,5 +1,5 @@
 <div class="pager">
   {% if page_no > 1 %}<a href="{{ query_with(request, page_no=page_no - 1) }}">← назад</a>{% endif %}
-  <span class="muted">стр. {{ page_no }} из {{ pages }} · найдено {{ total | num }}</span>
+  <span class="muted">стр. {{ page_no }} из {{ pages }} · найдено {{ 'больше ' if capped }}{{ total | num }}</span>
   {% if page_no < pages %}<a href="{{ query_with(request, page_no=page_no + 1) }}">вперёд →</a>{% endif %}
 </div>

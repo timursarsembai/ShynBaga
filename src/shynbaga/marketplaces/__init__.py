@@ -72,6 +72,26 @@ class SellerProfile:
 
 
 @dataclass(frozen=True)
+class Category:
+    """A node of the catalog tree as one answer showed it."""
+
+    code: str
+    title: str
+    products_count: int
+    popularity: int
+    # None when this answer cannot tell whether the node has children.
+    is_leaf: bool | None
+
+
+@dataclass(frozen=True)
+class CategoryCheck:
+    """A node's own answer: its figures and the full list of its children."""
+
+    node: Category
+    children: list[Category]
+
+
+@dataclass(frozen=True)
 class OfferList:
     offers: list[Offer] = field(default_factory=list)
     # False when sellers may be missing, so absence must not read as "stopped selling".
@@ -84,7 +104,14 @@ class Marketplace(Protocol):
     key: str
     bytes_received: int
 
+    # The deepest listing page served; past it the marketplace refuses.
+    max_listing_pages: int
+    # The code of the catalog's top node.
+    root_category: str
+
     def list_products(self, category: str, region: str, page: int) -> list[Product]: ...
+
+    def fetch_category(self, code: str, region: str) -> CategoryCheck: ...
 
     def fetch_product(self, external_id: str, region: str) -> Product: ...
 

@@ -66,7 +66,11 @@ def _utcnow() -> datetime:
 
 
 def discover(
-    markets: list[Marketplace], category: str, region: str, max_products: int
+    markets: list[Marketplace],
+    category: str,
+    region: str,
+    max_products: int,
+    max_pages: int | None = None,
 ) -> tuple[list[Product], str | None]:
     """Products found, plus why the listing stopped early, if it did.
 
@@ -85,6 +89,7 @@ def discover(
                 if (
                     crashes
                     or len(seen) >= max_products
+                    or (max_pages is not None and page >= max_pages)
                     or any(isinstance(f, Blocked) for _, f in failures)
                 ):
                     return
@@ -191,7 +196,7 @@ def track(
         product = market.fetch_product(external_id, region)
     else:
         product, fetched_at = known
-        if clock() - fetched_at < LOOKUP_FRESH_FOR:
+        if fetched_at is not None and clock() - fetched_at < LOOKUP_FRESH_FOR:
             db.mark_requested(conn, market.key, external_id, clock())
             conn.commit()
             return
@@ -200,6 +205,7 @@ def track(
     product_id = db.upsert_product(conn, market.key, product, now)
     db.record_offers(conn, market.key, product_id, region, offers, now)
     db.record_snapshot(conn, product_id, region, product, offers, now)
+    db.mark_offers_checked(conn, product_id, now)
     db.mark_requested(conn, market.key, external_id, now)
     conn.commit()
 
@@ -271,8 +277,28 @@ def _collect_products(
     found.update({p.external_id: p for p in products})
     products = list(found.values())
 
+    fetch_offers(conn, markets, products, positions, region, clock, result, run_id)
+
+    _refresh_seller_profiles(conn, markets, clock)
+    clean = result.products_failed == 0 and result.error is None
+    result.status = "completed" if clean else "partial"
+
+
+def fetch_offers(
+    conn: psycopg.Connection,
+    markets: list[Marketplace],
+    products: list[Product],
+    positions: dict[str, int],
+    region: str,
+    clock: Callable[[], datetime],
+    result: RunResult,
+    run_id: int,
+) -> None:
+    """Every seller's price for each product, in parallel, with a card snapshot each."""
+    key = markets[0].key
     consecutive_blocks = 0
     consecutive_failures = 0
+
     def offers(market: Marketplace, product: Product) -> OfferList:
         return market.fetch_offers(product, region)
 
@@ -309,12 +335,9 @@ def _collect_products(
                 run_id=run_id,
                 position=positions.get(product.external_id),
             )
+            db.mark_offers_checked(conn, product_id, now)
             conn.commit()
             result.products_ok += 1
-
-    _refresh_seller_profiles(conn, markets, clock)
-    clean = result.products_failed == 0 and result.error is None
-    result.status = "completed" if clean else "partial"
 
 
 def _refresh_seller_profiles(
